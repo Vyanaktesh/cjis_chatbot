@@ -1,0 +1,61 @@
+# Phase 1-2 dependencies. Later phases (pdfplumber, unstructured,
+# pytesseract, FastAPI, BGE-M3 / sentence-transformers, qwen inference
+# runtime, etc.) will be added to this file as their phases are built, so
+# `pip install -r requirements.txt` stays a single source of truth.
+
+psycopg2-binary==2.9.9
+# pydantic bumped from the original 2.9.2 -- google-genai (added below,
+# Phase 7 follow-up) requires pydantic>=2.12.5. Confirmed working together
+# at this version (pydantic-settings==2.6.1 only needs pydantic>=2.7.0, so
+# it's unaffected).
+pydantic==2.13.4
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+qdrant-client==1.12.1
+
+# --- Phase 2: fetcher ---
+playwright==1.56.0
+
+# --- Phase 3: extraction + chunking ---
+beautifulsoup4==4.12.3
+lxml==5.3.0
+pdfplumber==0.11.4
+pytesseract==0.3.13
+Pillow==10.4.0
+pdf2image==1.17.0
+
+# --- Phase 4: embedding + indexing ---
+# CPU-only torch build (this project must run with modest/no GPU) — the
+# extra index is CPU-wheel-only, PyPI is still used for everything else.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
+FlagEmbedding==1.4.0
+
+# --- Phase 5: admin review API ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+# bumped from 0.27.2 -- google-genai (below) requires httpx>=0.28.1.
+httpx==0.28.1
+
+# --- Phase 7: generation ---
+# CPU-only llama.cpp bindings — self-hosted GGUF inference, no third-party
+# API. Needs a version recent enough to know the Qwen3 GGUF architecture;
+# 0.3.4 (the "latest stable" at Phase 4's install time) predates it and
+# fails with "Failed to load model from file" — found live, not assumed.
+llama-cpp-python==0.3.34
+# huggingface_hub is already pulled in transitively by FlagEmbedding
+# (Phase 4) — used directly here too (scripts/download_generation_model.py)
+# so it's listed explicitly, but NOT version-pinned to avoid fighting the
+# newer version FlagEmbedding's dependency chain already installs.
+huggingface_hub
+
+# --- Phase 7 follow-up: optional Gemini API generation backend ---
+# Only used when GENERATION_BACKEND=gemini in .env (default is still
+# self-hosted "qwen" above, unaffected by this). google-genai is Google's
+# actively-maintained SDK (the older google-generativeai package is
+# deprecated) — see app/generation/gemini_backend.py. Pinned (rather than
+# left floating like earlier in this file) because it's the reason
+# pydantic/httpx above had to move -- an unpinned future version could
+# raise its own minimums again and reintroduce that conflict.
+google-genai==2.18.1

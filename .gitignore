@@ -1,0 +1,30 @@
+# --- environment / secrets ---
+.env
+*.env.local
+
+# --- python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# --- local data / volumes (self-hosted DB + vector store persistence) ---
+data/postgres_data/
+data/qdrant_storage/
+data/raw/
+data/chunks_preview/
+data/models/
+
+# --- misc host/session cruft not part of this project ---
+.cache/
+.config/
+.npm/
+.npm-global/
+.ssh/
+.wget-hsts
+.claude/
+
+# --- editors / OS ---
+.DS_Store
+*.swp

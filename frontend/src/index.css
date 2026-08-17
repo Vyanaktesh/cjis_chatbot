@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/*
+ * Consulate brand palette. Deliberately kept as plain CSS variables (not a
+ * Tailwind theme extension) so this is trivially copy-pasteable into the
+ * real consulate site's stylesheet later — swap these three values and the
+ * whole widget re-themes.
+ */
+:root {
+  --brand-blue: #1a4f8b;
+  --brand-blue-dark: #123963;
+  --brand-blue-light: #eaf2fb;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+/* Thin, unobtrusive scrollbar inside the message viewport */
+.consulate-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.consulate-scroll::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
+}
+.consulate-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
