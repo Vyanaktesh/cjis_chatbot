@@ -3,6 +3,7 @@ import type {
   ThreadAssistantMessagePart,
   ThreadMessage,
 } from "@assistant-ui/react";
+import { playReceive } from "./sound";
 
 /**
  * Phase 8: bridges assistant-ui's runtime to our own FastAPI backend's
@@ -26,6 +27,17 @@ const API_BASE =
 // nothing to expire or clean up) rather than by a retention policy anyone
 // has to trust.
 let sessionId: string | null = null;
+
+// Called when the widget panel closes (see ChatWidget's onClosed) so the
+// *next* open starts a genuinely new session id, matching the reset of the
+// visible thread itself (see App.tsx's resetKey). The backend is fully
+// stateless (app/api/main.py) and never looks this id up server-side --
+// history is always sent explicitly in the request body -- so this has no
+// functional effect on what the backend does with it, only on what id
+// shows up in its logs for the next conversation.
+export function resetSession() {
+  sessionId = null;
+}
 
 // Mirrors app/generation/prompt.py's HISTORY_MAX_TURNS — no point sending
 // the backend more turns than it will ever actually use.
@@ -101,6 +113,7 @@ export const backendAdapter: ChatModelAdapter = {
       ),
     ];
 
+    playReceive();
     return { content };
   },
 };

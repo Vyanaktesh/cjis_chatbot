@@ -1,21 +1,22 @@
 """
-Admin review + retrieval + generation API.
+Public retrieval + generation API.
 
 Endpoints:
   GET  /health                              - liveness check (Postgres + Qdrant)
-  GET  /sources                             - per-source chunk-count overview
-  GET  /review/pending                      - list chunks awaiting review
-  GET  /review/chunks/{chunk_id}             - full chunk detail
-  GET  /review/sources/{source_id}/diff      - diff latest vs previous version
-  POST /review/chunks/{chunk_id}/approve     - approve a chunk
-  POST /review/chunks/{chunk_id}/reject      - reject a chunk
-  POST /upload                               - manual PDF upload through the
-                                                same extract/chunk/embed/index
-                                                pipeline as the bulk fetcher
   GET  /search                               - Phase 6: hybrid retrieval, approved-only
   POST /generate                             - Phase 7: retrieval + grounded Qwen3 answer
   POST /chat                                 - Phase 8: frontend-facing chat endpoint
                                                 (thin wrapper over /generate — see note below)
+
+The admin-facing surface that used to live here — GET /sources, GET/POST
+/review/*, and POST /upload — has moved to the separate kb_admin service
+(port 8100, HTTP Basic auth required on every route). It reuses the exact
+same app.review.* / app.ingestion.pipeline logic via kb_admin's sys.path
+bridge rather than calling this service over HTTP. It was moved because
+this app.py has no auth at all (see the CORS comment below) and those
+routes let anyone who could reach this port write/approve/reject content —
+fine for local dev, not something to expose alongside the public chat
+endpoints. See consulate-kb-admin/kb_admin/api/documents.py and review.py.
 
 Run with: uvicorn app.api.main:app --reload --port 8000
 
@@ -36,27 +37,21 @@ retention policy anyone has to trust.
 
 import uuid
 from typing import Optional
-from uuid import UUID
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.api import upload as upload_module
-from app.api.schemas import ReviewDecisionRequest
 from app.core.config import get_settings
 from app.core.logging_config import configure_logging
-from app.db.chunks_repo import counts_by_source, get_chunk, list_pending
 from app.db.connection import get_conn
 from app.generation.service import answer_question
 from app.retrieval.retriever import search as retrieval_search
-from app.review.diff import NoDiffAvailable, diff_latest_versions
-from app.review.service import ChunkNotFound, decide_chunk
 from app.vectorstore.qdrant_store import get_qdrant_client
 
 configure_logging(get_settings().log_level)
 
-app = FastAPI(title="Consulate RAG Chatbot — Admin Review API", version="0.8.0")
+app = FastAPI(title="Consulate RAG Chatbot — Public API", version="0.9.0")
 
 # Phase 8: the React widget runs on its own dev-server origin (and, in
 # production, potentially a different origin than the API). Allowing any
@@ -70,9 +65,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(upload_module.router)
-
-
 @app.get("/health")
 def health():
     with get_conn() as conn:
@@ -82,73 +74,6 @@ def health():
     client = get_qdrant_client()
     client.get_collections()
     return {"status": "ok"}
-
-
-@app.get("/sources")
-def sources_overview():
-    with get_conn() as conn:
-        rows = counts_by_source(conn)
-    return {"sources": rows}
-
-
-@app.get("/review/pending")
-def review_pending(
-    service_category: Optional[str] = None,
-    source_id: Optional[UUID] = None,
-    limit: int = 50,
-    offset: int = 0,
-):
-    limit = max(1, min(limit, 200))
-    offset = max(0, offset)
-    with get_conn() as conn:
-        rows, total = list_pending(
-            conn,
-            service_category=service_category,
-            source_id=source_id,
-            limit=limit,
-            offset=offset,
-        )
-    return {"total": total, "limit": limit, "offset": offset, "chunks": rows}
-
-
-@app.get("/review/chunks/{chunk_id}")
-def review_chunk_detail(chunk_id: UUID):
-    with get_conn() as conn:
-        chunk = get_chunk(conn, chunk_id)
-    if chunk is None:
-        raise HTTPException(status_code=404, detail=f"no such chunk: {chunk_id}")
-    return chunk
-
-
-@app.get("/review/sources/{source_id}/diff")
-def review_source_diff(source_id: UUID):
-    with get_conn() as conn:
-        try:
-            return diff_latest_versions(conn, source_id)
-        except NoDiffAvailable as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-
-
-@app.post("/review/chunks/{chunk_id}/approve")
-def review_approve(chunk_id: UUID, body: ReviewDecisionRequest):
-    client = get_qdrant_client()
-    with get_conn() as conn:
-        try:
-            return decide_chunk(conn, client, chunk_id, "approved", body.actor, body.reason)
-        except ChunkNotFound:
-            raise HTTPException(status_code=404, detail=f"no such chunk: {chunk_id}")
-
-
-@app.post("/review/chunks/{chunk_id}/reject")
-def review_reject(chunk_id: UUID, body: ReviewDecisionRequest):
-    client = get_qdrant_client()
-    with get_conn() as conn:
-        try:
-            return decide_chunk(conn, client, chunk_id, "rejected", body.actor, body.reason)
-        except ChunkNotFound:
-            raise HTTPException(status_code=404, detail=f"no such chunk: {chunk_id}")
 
 
 @app.get("/search")

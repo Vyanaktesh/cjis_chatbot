@@ -22,6 +22,7 @@ Rules, no exceptions:
 4. If sources disagree with each other, say so explicitly and cite both, rather than picking one silently.
 5. Never invent a source number that wasn't given to you.
 6. Be concise and direct. This is a practical service-information lookup, not an essay.
+6a. Never use an em dash (—) or en dash (–) in your response. Use a period, comma, or regular hyphen instead.
 7. Earlier turns in this conversation (if any) may be shown to you before the current message — use them ONLY to understand what the user is referring to (e.g. resolving "what about for a child" after an OCI question). Their citation numbers were relative to that earlier turn's own source list and do NOT apply now. Every claim in your new answer must still be justified by, and cited to, the numbered sources in the CURRENT message only."""
 
 
@@ -98,13 +99,30 @@ def build_rag_messages(
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+_DASH_SPACED_RE = re.compile(r"\s*[—–]\s*")
+
+
+def _strip_dashes(text: str) -> str:
+    """Rule 6a in SYSTEM_PROMPT asks the model not to use em/en dashes, but
+    LLMs reach for them out of habit regardless of instruction; this is a
+    deterministic safety net. A dash written with surrounding spaces (the
+    common "clause break" usage, e.g. "word — word") becomes ", "; a bare
+    dash with no spaces (rare, usually a number range like "10–15") becomes
+    "-"."""
+
+    def replace(match: "re.Match[str]") -> str:
+        return ", " if len(match.group(0)) > 1 else "-"
+
+    return _DASH_SPACED_RE.sub(replace, text)
 
 
 def strip_thinking(raw_text: str) -> str:
     """Qwen3 wraps chain-of-thought in <think>...</think>; /no_think should
     make this an empty block, but strip it defensively either way rather
-    than assume the suffix always works across model/runtime versions."""
-    return _THINK_BLOCK_RE.sub("", raw_text).strip()
+    than assume the suffix always works across model/runtime versions.
+    Also normalizes away em/en dashes (see _strip_dashes) since the model
+    doesn't reliably follow the SYSTEM_PROMPT instruction against them."""
+    return _strip_dashes(_THINK_BLOCK_RE.sub("", raw_text).strip())
 
 
 def extract_cited_indices(answer_text: str) -> list[int]:

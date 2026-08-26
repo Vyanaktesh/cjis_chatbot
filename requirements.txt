@@ -30,6 +30,16 @@ pdf2image==1.17.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.13.0
 FlagEmbedding==1.4.0
+# FlagEmbedding 1.4.0 doesn't pin transformers itself, and its two model
+# paths need incompatible ranges of it: BGEM3FlagModel's embedding path
+# needs a transformers new enough to support AutoModel's `dtype` kwarg
+# (added in the 4.5x line), while FlagReranker's reranking path (added
+# alongside app/retrieval/reranker.py) calls tokenizer.prepare_for_model(),
+# which transformers 5.x removed. 4.57.6 is the newest release satisfying
+# both -- found live (not assumed) after the reranker broke on whatever
+# 5.x pip resolved by default and BGE-M3 embedding broke on an older 4.46
+# pin tried first. Re-verify both paths before bumping this.
+transformers==4.57.6
 
 # --- Phase 5: admin review API ---
 fastapi==0.115.5

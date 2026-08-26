@@ -15,6 +15,7 @@ data/qdrant_storage/
 data/raw/
 data/chunks_preview/
 data/models/
+data/skills/
 
 # --- misc host/session cruft not part of this project ---
 .cache/
@@ -24,6 +25,11 @@ data/models/
 .ssh/
 .wget-hsts
 .claude/
+
+# --- Claude Code skill tooling (installed via `npx skills add`), not
+# application code ---
+.agents/
+skills-lock.json
 
 # --- editors / OS ---
 .DS_Store

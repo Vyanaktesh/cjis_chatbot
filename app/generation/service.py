@@ -13,6 +13,7 @@ from typing import Any, Optional
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
 from app.generation.prompt import build_rag_messages, extract_cited_indices, strip_thinking
+from app.retrieval.retriever import probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
 logger = get_logger(__name__)
@@ -42,6 +43,19 @@ def _default_generator() -> Any:
 NO_CONTEXT_ANSWER = (
     "I don't have approved information covering that yet. Please contact "
     "the consulate directly, or check back once this topic has been reviewed."
+)
+
+# Distinct from NO_CONTEXT_ANSWER: that message implies the topic is
+# consulate-related but not yet reviewed/approved, which would be
+# misleading for a question that was never in scope to begin with (e.g.
+# "what is the capital of France?"). Kept short and polite throughout —
+# this is a government-run assistant, so a curt or robotic decline reads
+# poorly even when the underlying answer is just "no".
+OUT_OF_SCOPE_ANSWER = (
+    "Thank you for your message. This looks like it's outside what I can "
+    "help with here, as I'm only able to answer questions about Indian "
+    "passport, OCI, and visa services. Please feel free to ask me about "
+    "those, or contact the consulate directly for anything else."
 )
 
 
@@ -75,8 +89,29 @@ def answer_question(
     history: Optional[list[dict[str, str]]] = None,
     generator: Optional[Any] = None,
 ) -> dict[str, Any]:
+    search_query = _retrieval_query(query, history)
+    settings = get_settings()
+
+    relevance = probe_relevance(
+        search_query,
+        service_category=service_category,
+        canonical=canonical,
+        source_id=source_id,
+        jurisdiction=jurisdiction,
+        applicant_variant=applicant_variant,
+    )
+    if relevance < settings.retrieval_min_relevance:
+        logger.info(f"declined as out of scope (relevance={relevance:.3f}): {query!r}")
+        return {
+            "query": query,
+            "answer": OUT_OF_SCOPE_ANSWER,
+            "grounded": False,
+            "citations": [],
+            "retrieved_count": 0,
+        }
+
     chunks = retrieval_search(
-        _retrieval_query(query, history),
+        search_query,
         limit=limit,
         service_category=service_category,
         canonical=canonical,

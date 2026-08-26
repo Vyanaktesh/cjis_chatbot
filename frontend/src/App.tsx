@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
-import { backendAdapter } from "./chat/backendAdapter";
+import { backendAdapter, resetSession } from "./chat/backendAdapter";
 import { ChatWidget } from "./chat/ChatWidget";
 
 /**
@@ -47,13 +48,40 @@ function DemoPage() {
   );
 }
 
-export default function App() {
+/**
+ * useLocalRuntime keeps its thread state (all messages) for as long as the
+ * component calling it stays mounted -- there's no "clear conversation"
+ * method on a local runtime's thread list (verified against
+ * @assistant-ui/core: switchToNewThread() throws "Method not implemented"
+ * on LocalThreadListRuntimeCore). So clearing the conversation on close
+ * means unmounting and remounting the whole runtime instead: bumping
+ * `resetKey` changes this component's `key` in App below, which forces
+ * React to throw away the old ChatRuntime (and the useLocalRuntime inside
+ * it) and construct a brand new one -- a fresh, empty thread.
+ */
+function ChatRuntime({ onClosed }: { onClosed: () => void }) {
   const runtime = useLocalRuntime(backendAdapter);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <DemoPage />
-      <ChatWidget />
+      <ChatWidget onClosed={onClosed} />
     </AssistantRuntimeProvider>
+  );
+}
+
+export default function App() {
+  const [resetKey, setResetKey] = useState(0);
+
+  return (
+    <>
+      <DemoPage />
+      <ChatRuntime
+        key={resetKey}
+        onClosed={() => {
+          resetSession();
+          setResetKey((k) => k + 1);
+        }}
+      />
+    </>
   );
 }

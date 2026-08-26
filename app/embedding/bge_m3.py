@@ -13,6 +13,8 @@ made at inference time, which is what keeps this self-hostable per the
 brief (no third-party SaaS API in the core pipeline).
 """
 
+import sys
+import types
 from dataclasses import dataclass
 
 from app.core.logging_config import get_logger
@@ -21,6 +23,40 @@ logger = get_logger(__name__)
 
 MODEL_NAME = "BAAI/bge-m3"
 DENSE_DIM = 1024
+
+
+def _ensure_datasets_importable() -> None:
+    """FlagEmbedding (this module's dependency) unconditionally does a bare
+    `import datasets` deep in its own import chain
+    (FlagEmbedding/abc/finetune/embedder/AbsDataset.py), purely to support
+    fine-tuning-dataset loading this project never uses -- we only ever
+    call BGEM3FlagModel.encode() for inference. That import transitively
+    needs pyarrow's `dataset` C extension, which on some machines gets
+    blocked by corporate endpoint-security/Application Control policies
+    (seen live: "An Application Control policy has blocked this file" on
+    pyarrow's `_dataset` DLL) even though nothing in this codebase touches
+    real HF `datasets` functionality.
+
+    If the real import fails, register a minimal stub under
+    sys.modules["datasets"] so FlagEmbedding's `import datasets` line
+    succeeds anyway. This is safe specifically because that whole chain
+    only ever does `import datasets` (never `from datasets import <name>`)
+    at *import* time -- real attributes are only touched inside
+    fine-tuning methods that this project never calls. On a machine where
+    the real `datasets` import works fine, this is a no-op and the real
+    package is used as normal."""
+    if "datasets" in sys.modules:
+        return
+    try:
+        import datasets  # noqa: F401
+    except Exception as exc:
+        logger.warning(
+            f"real 'datasets' package unavailable ({exc!r}); substituting a stub. "
+            "This is expected/harmless for this project -- BGE-M3 embedding "
+            "inference never uses datasets' actual functionality, only "
+            "FlagEmbedding's own import chain unconditionally imports it."
+        )
+        sys.modules["datasets"] = types.ModuleType("datasets")
 
 
 @dataclass
@@ -36,6 +72,7 @@ class BgeM3Embedder:
     def __init__(self, batch_size: int = 12):
         self.batch_size = batch_size
         if BgeM3Embedder._model is None:
+            _ensure_datasets_importable()
             from FlagEmbedding import BGEM3FlagModel
 
             logger.info(f"loading {MODEL_NAME} (first call in this process only)...")

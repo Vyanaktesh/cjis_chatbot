@@ -18,8 +18,10 @@ comparable scales).
 
 from typing import Any, Optional
 
+from app.core.config import get_settings
 from app.embedding.bge_m3 import BgeM3Embedder
-from app.vectorstore.qdrant_store import build_filter, get_qdrant_client, hybrid_search
+from app.retrieval.reranker import Reranker
+from app.vectorstore.qdrant_store import build_filter, dense_search, get_qdrant_client, hybrid_search
 
 APPROVED = "approved"
 
@@ -44,6 +46,41 @@ def _point_to_result(point, rank: int) -> dict[str, Any]:
     }
 
 
+def probe_relevance(
+    query: str,
+    *,
+    service_category: Optional[str] = None,
+    canonical: Optional[bool] = None,
+    source_id: Optional[str] = None,
+    jurisdiction: Optional[str] = None,
+    applicant_variant: Optional[str] = None,
+    embedder: Optional[BgeM3Embedder] = None,
+    client=None,
+) -> float:
+    """Cheap off-topic guardrail check: raw dense-only cosine similarity of
+    `query` against the single closest approved chunk, restricted to the
+    same filters `search()` would use. Deliberately NOT hybrid+RRF (see
+    Settings.retrieval_min_relevance's docstring for why RRF's rank-based
+    score can't be thresholded) and deliberately top-1 only, since this
+    exists purely to decide whether to bother with real retrieval + a
+    generation call at all, not to return usable results."""
+    embedder = embedder or BgeM3Embedder(batch_size=1)
+    client = client or get_qdrant_client()
+
+    query_filter = build_filter(
+        service_category=service_category,
+        canonical=canonical,
+        review_status=APPROVED,
+        source_id=source_id,
+        jurisdiction=jurisdiction,
+        applicant_variant=applicant_variant,
+    )
+
+    [query_embedding] = embedder.embed([query])
+    points = dense_search(client, query_embedding.dense, limit=1, query_filter=query_filter)
+    return points[0].score if points else 0.0
+
+
 def search(
     query: str,
     *,
@@ -56,12 +93,28 @@ def search(
     applicant_variant: Optional[str] = None,
     embedder: Optional[BgeM3Embedder] = None,
     client=None,
+    reranker: Optional[Reranker] = None,
 ) -> list[dict[str, Any]]:
     """Embed `query`, run hybrid dense+sparse search restricted to approved
     chunks (plus any of the optional metadata filters), and return a plain
-    list of result dicts ordered by fused rank."""
+    list of result dicts ordered by relevance.
+
+    When `settings.retrieval_rerank` is on, the initial hybrid search pulls
+    `retrieval_rerank_candidates` results instead of just `limit`, and a
+    cross-encoder (see app/retrieval/reranker.py) re-scores that shortlist
+    against the actual query text before cutting down to `limit` — added
+    because hybrid dense+sparse fusion alone was shown (via kb_admin's
+    eval golden set, built from real citizen queries) to often rank the
+    genuinely correct chunk too low for short, keyword-style real queries.
+
+    Defaults OFF (see Settings.retrieval_rerank): the cross-encoder is too
+    slow on CPU-only hardware for the live chat path. kb_admin's own .env
+    turns it on specifically for offline eval runs, where the extra
+    latency is an acceptable trade for the accuracy signal.
+    """
     embedder = embedder or BgeM3Embedder(batch_size=1)
     client = client or get_qdrant_client()
+    settings = get_settings()
 
     query_filter = build_filter(
         service_category=service_category,
@@ -73,13 +126,20 @@ def search(
     )
 
     [query_embedding] = embedder.embed([query])
+    search_limit = max(limit, settings.retrieval_rerank_candidates) if settings.retrieval_rerank else limit
     points = hybrid_search(
         client,
         query_dense=query_embedding.dense,
         query_sparse_indices=query_embedding.sparse_indices,
         query_sparse_values=query_embedding.sparse_values,
-        limit=limit,
+        limit=search_limit,
         prefetch_limit=prefetch_limit,
         query_filter=query_filter,
     )
-    return [_point_to_result(p, i + 1) for i, p in enumerate(points)]
+    results = [_point_to_result(p, i + 1) for i, p in enumerate(points)]
+
+    if not settings.retrieval_rerank or not results:
+        return results[:limit]
+
+    reranker = reranker or Reranker()
+    return reranker.rerank(query, results, limit=limit)

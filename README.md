@@ -157,6 +157,17 @@ What's here:
   `approved` / `rejected` / `superseded`) and `superseded_by` — Phase 5 is
   the first phase to actually exercise all four states.
 
+**Update, kb_admin build:** `GET /sources`, `GET/POST /review/*`, and
+`POST /upload` have since moved out of this app's `app/api/main.py` into
+the separate `consulate-kb-admin` service (port 8100), behind HTTP Basic
+auth on every route. The reasoning above (identical pipeline, no
+Postgres/Qdrant drift) still holds — kb_admin reuses these exact same
+`app/ingestion/pipeline.py` / `app/review/*` modules in-process via its own
+sys.path bridge, it just doesn't expose them unauthenticated on this
+process's port anymore. `app/api/upload.py` and `app/api/schemas.py` were
+deleted; see `consulate-kb-admin/kb_admin/api/documents.py` and
+`review.py` for where this logic lives now.
+
 **Phase 6 — Hybrid retrieval**
 - `app/vectorstore/qdrant_store.py` — `hybrid_search()`: Qdrant's native
   Query API, running the dense leg and the sparse leg as independent ANN
@@ -606,6 +617,14 @@ checklist PDF, chunk_index 14) matches the one Qdrant point with
 check — all 5/5 checks still `PASS`.
 
 ## How to verify Phase 5
+
+*(Historical record: these commands were run against `app/api/main.py` on
+port 8000 when `/sources`, `/review/*`, and `/upload` still lived there.
+That surface has since moved to `consulate-kb-admin` on port 8100 — see the
+"Update, kb_admin build" note above. To re-run an equivalent check today,
+swap the base URL to `http://127.0.0.1:8100` and add
+`-u admin:<ADMIN_PASSWORD>` (HTTP Basic auth) to each `curl` call; the
+request/response shapes are unchanged.)*
 
 ```bash
 pip install -r requirements.txt   # picks up fastapi/uvicorn/python-multipart

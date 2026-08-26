@@ -37,12 +37,42 @@ def estimate_tokens(text: str) -> int:
 
 def chunk_blocks(blocks: list[Block], max_tokens: int = DEFAULT_MAX_TOKENS) -> list[Chunk]:
     sections = _split_into_sections(blocks)
+    sections = _drop_repeated_heading_artifact(sections)
     chunks: list[Chunk] = []
     for heading_trail, content_blocks in sections:
         chunks.extend(_chunk_section(content_blocks, heading_trail, max_tokens))
     for i, chunk in enumerate(chunks):
         chunk.chunk_index = i
     return chunks
+
+
+def _drop_repeated_heading_artifact(
+    sections: list[tuple[list[str], list[Block]]],
+) -> list[tuple[list[str], list[Block]]]:
+    """A heading LEVEL that repeats identically across every section in a
+    document isn't a real section heading at that level -- it's a running
+    page header/footer (e.g. "CARRYING MORTAL REMAINS / CARRYING ASHES")
+    that PDF extraction misclassified as a heading wrapping every genuine
+    section. Strips constant leading levels (outermost first) while
+    keeping levels that actually vary section to section, since those are
+    real content headings -- e.g. a trail of ["CARRYING MORTAL REMAINS /
+    CARRYING ASHES", "Mandatory Documents"] repeated on every section
+    loses only its first (constant, noise) level, keeping the second
+    (varying, meaningful) one."""
+    if len(sections) <= 1:
+        return sections
+    max_depth = max(len(trail) for trail, _ in sections)
+    constant_depth = 0
+    for level in range(max_depth):
+        if not all(level < len(trail) for trail, _ in sections):
+            break
+        values = {trail[level] for trail, _ in sections}
+        if len(values) != 1:
+            break
+        constant_depth = level + 1
+    if constant_depth == 0:
+        return sections
+    return [(trail[constant_depth:], blocks) for trail, blocks in sections]
 
 
 def _split_into_sections(blocks: list[Block]) -> list[tuple[list[str], list[Block]]]:

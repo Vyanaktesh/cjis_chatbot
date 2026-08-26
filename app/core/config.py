@@ -40,6 +40,44 @@ class Settings(BaseSettings):
     fetcher_contact_email: str = ""
     fetcher_user_agent: str = "ConsulateRAGBot/0.1"
 
+    # --- Retrieval reranking (added after kb_admin's eval golden set, built
+    # from real citizen queries, showed short/keyword-style real queries
+    # often rank the correct chunk too low from hybrid search alone — see
+    # app/retrieval/reranker.py). Defaults OFF: BAAI/bge-reranker-v2-m3 is
+    # too slow on CPU-only hardware for the live chat path (~2-8s per
+    # candidate scored, measured live) — reintroducing the exact latency
+    # problem that made this project switch generation to Gemini in the
+    # first place. kb_admin's own .env explicitly turns this on for
+    # offline eval runs (see consulate-kb-admin/.env), where slower
+    # runtime is an acceptable trade for the accuracy signal; the live
+    # chatbot's own .env should leave this False.
+    retrieval_rerank: bool = False
+    # How many candidates the initial hybrid search pulls before reranking
+    # narrows down to the caller's actual `limit` — wide enough that a
+    # correct-but-lower-ranked chunk has a real chance to be in the pool,
+    # small enough that cross-encoder scoring (much slower per-item than
+    # the bi-encoder search that precedes it) stays fast on CPU.
+    retrieval_rerank_candidates: int = 30
+    # Off-topic guardrail (e.g. "what is the capital of France?"): the RRF
+    # fusion score hybrid_search returns is rank-based, not a calibrated
+    # similarity, so it can't be thresholded meaningfully. Instead
+    # app.retrieval.retriever.probe_relevance() runs one raw dense-only
+    # top-1 lookup and compares BGE-M3 cosine similarity against this
+    # floor; below it, the turn is declined before ever calling retrieval's
+    # full hybrid search or the generation backend (saves latency and, on
+    # the Gemini backend, quota). 0.55 was picked by probing this live
+    # deployment's actual approved-chunk set: off-topic queries ("what is
+    # a cat", "capital of France") scored 0.36-0.45 raw BGE-M3 cosine
+    # similarity against their closest chunk, genuinely on-topic queries
+    # ("how do I renew my passport", "OCI documents needed") scored
+    # 0.70-0.73 -- a wide, clean gap, so 0.55 sits in the middle with
+    # margin both directions. Not tuned against kb_admin's eval golden set
+    # though -- re-probe with app.retrieval.retriever.probe_relevance() if
+    # genuinely on-topic questions start getting declined, or off-topic
+    # ones slip through, since the gap's exact location will shift as more
+    # sources get approved into the chunk set.
+    retrieval_min_relevance: float = 0.55
+
     # --- Generation (Phase 7) ---
     # Self-hosted, CPU-only GGUF model via llama.cpp — no third-party API.
     # Qwen3-4B (not the originally-specced 8B) is a deliberate, documented

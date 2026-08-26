@@ -22,13 +22,22 @@ def build_chunk_records(
 ) -> list[dict[str, Any]]:
     records = []
     for chunk in chunks:
-        content_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+        # chunker.py's heading_trail prefix only carries in-document
+        # headings, not the document's own topic — checklist PDFs split
+        # into one requirement per chunk (e.g. "Mandatory Documents >
+        # PROOF OF ADDRESS") lose the topic name entirely, so a short
+        # query naming the topic itself ("Police Clearance Certificate")
+        # has nothing in any single chunk to match against. Prepending
+        # the source title restores that context for embedding/search
+        # without changing how chunker.py sizes or splits sections.
+        chunk_text = f"{source.title}\n\n{chunk.text}" if source.title else chunk.text
+        content_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
         records.append(
             {
                 "source_id": source.id,
                 "source_version_id": source_version.id,
                 "chunk_index": chunk.chunk_index,
-                "chunk_text": chunk.text,
+                "chunk_text": chunk_text,
                 "content_hash": content_hash,
                 "source_url": source.url,
                 "retrieval_date": source_version.retrieval_date,
