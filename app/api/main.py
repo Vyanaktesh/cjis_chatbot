@@ -39,9 +39,13 @@ import re
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from app.core.config import get_settings
 from app.core.logging_config import configure_logging, get_logger
@@ -51,19 +55,39 @@ from app.integrations import hubspot
 from app.retrieval.retriever import search as retrieval_search
 from app.vectorstore.qdrant_store import get_qdrant_client
 
-configure_logging(get_settings().log_level)
+settings = get_settings()
+configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
 app = FastAPI(title="Consulate RAG Chatbot — Public API", version="0.9.0")
 
+# Rate limiting, keyed on client IP (see Settings.rate_limit_* for why: an
+# unbounded /generate or /chat could exhaust the Gemini quota or run up a
+# bill in minutes, and unbounded /support/ticket or /citizen-corner/submit
+# could spam real HubSpot tickets). Registered BEFORE CORSMiddleware below
+# so CORS ends up the outermost layer -- verified this ordering is what
+# makes a 429 response still carry CORS headers; without that, a rate
+# limit hit shows the browser a generic network error instead of the
+# actual "please slow down" message.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # Phase 8: the React widget runs on its own dev-server origin (and, in
-# production, potentially a different origin than the API). Allowing any
-# origin is fine here because this endpoint requires no auth and serves no
-# PII back — it's the same publicly-answerable content /generate already
-# serves. Tighten to a specific origin list before a real deployment.
+# production, potentially a different origin than the API). CORS_ALLOWED_ORIGINS
+# defaults to "*" so local dev keeps working out of the box -- MUST be set to
+# the real consulate site's origin(s) before a real deployment, since with
+# "*" any website can call the write endpoints (/support/ticket,
+# /citizen-corner/submit) from a visitor's own browser.
+_cors_origins = (
+    ["*"]
+    if settings.cors_allowed_origins.strip() == "*"
+    else [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -80,7 +104,9 @@ def health():
 
 
 @app.get("/search")
+@limiter.limit(settings.rate_limit_search)
 def search(
+    request: Request,
     q: str,
     limit: int = 8,
     service_category: Optional[str] = None,
@@ -124,7 +150,8 @@ class GenerateRequest(BaseModel):
 
 
 @app.post("/generate")
-def generate(body: GenerateRequest):
+@limiter.limit(settings.rate_limit_generate)
+def generate(request: Request, body: GenerateRequest):
     """
     Phase 7: retrieval (approved-only) + a grounded Qwen3 answer with
     bracket citations back to the retrieved chunks. If retrieval finds
@@ -168,7 +195,8 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/chat")
-def chat(body: ChatRequest):
+@limiter.limit(settings.rate_limit_generate)
+def chat(request: Request, body: ChatRequest):
     """
     Phase 8: frontend-facing chat endpoint. Thin wrapper over the same
     answer_question() pipeline as /generate, shaped for the React widget:
@@ -243,7 +271,8 @@ class SupportTicketResponse(BaseModel):
 
 
 @app.post("/support/ticket", response_model=SupportTicketResponse)
-def create_support_ticket(body: SupportTicketRequest):
+@limiter.limit(settings.rate_limit_submit)
+def create_support_ticket(request: Request, body: SupportTicketRequest):
     """
     Escalation path for when the chatbot can't ground an answer (see
     app/generation/service.py's OUT_OF_SCOPE_ANSWER / NO_CONTEXT_ANSWER /
@@ -282,7 +311,9 @@ class CitizenSubmissionResponse(BaseModel):
 
 
 @app.post("/citizen-corner/submit", response_model=CitizenSubmissionResponse)
+@limiter.limit(settings.rate_limit_submit)
 async def submit_citizen_corner(
+    request: Request,
     name: str = Form(...),
     email: str = Form(...),
     title: str = Form(...),

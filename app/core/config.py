@@ -23,6 +23,27 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
 
+    # --- CORS ---
+    # Comma-separated list of allowed origins, or "*" for any origin.
+    # Defaults to "*" so local dev (the Vite dev server on a random port)
+    # keeps working out of the box, but this is the one setting that MUST
+    # be locked down before a real deployment: with "*", any website can
+    # call this API's write endpoints (/support/ticket,
+    # /citizen-corner/submit) from a visitor's browser using their session.
+    # Set to the real consulate site's origin(s) in production, e.g.
+    # CORS_ALLOWED_ORIGINS=https://www.indiainatlanta.gov.in
+    cors_allowed_origins: str = "*"
+
+    # --- Rate limiting (slowapi/limits syntax: "<n>/<period>", e.g.
+    # "20/minute") --- keyed on client IP. Defaults are generous enough for
+    # normal use but bound the worst case: unlimited requests to /chat or
+    # /generate could exhaust the Gemini free-tier quota or run up a paid
+    # bill in minutes; unlimited /support/ticket or /citizen-corner/submit
+    # calls could spam real tickets into HubSpot.
+    rate_limit_generate: str = "20/minute"
+    rate_limit_search: str = "60/minute"
+    rate_limit_submit: str = "5/minute"
+
     # --- PostgreSQL ---
     postgres_host: str = "localhost"
     postgres_port: int = 5432
