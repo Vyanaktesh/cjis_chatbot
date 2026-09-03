@@ -55,7 +55,16 @@ def extract_pdf(pdf_bytes: bytes) -> list[Block]:
                 "page has no extractable text, falling back to OCR",
                 extra={"fields": {"page_number": page_number}},
             )
-            blocks.extend(_ocr_page(pdf_bytes, page_number))
+            # Isolate OCR failures per page: a missing poppler/tesseract binary
+            # or one pathological scanned page must not abort extraction of the
+            # entire document (which would block ingestion of that whole source).
+            try:
+                blocks.extend(_ocr_page(pdf_bytes, page_number))
+            except Exception as exc:  # noqa: BLE001 -- best-effort OCR fallback
+                logger.warning(
+                    "OCR failed for page, skipping it",
+                    extra={"fields": {"page_number": page_number, "error": str(exc)}},
+                )
 
     return _merge_paragraph_runs(blocks)
 
@@ -64,7 +73,9 @@ def _estimate_body_font_size(pdf) -> float:
     sizes = []
     for page in pdf.pages:
         for word in page.extract_words(extra_attrs=["size"]):
-            sizes.append(round(word["size"]))
+            size = word.get("size")
+            if size is not None:
+                sizes.append(round(size))
     if not sizes:
         return 10.0
     return Counter(sizes).most_common(1)[0][0]
@@ -93,15 +104,18 @@ def _classify_lines(lines: list[list[dict]], body_size: float, page_number: int)
         text = " ".join(w["text"] for w in line).strip()
         if not text:
             continue
-        avg_size = median(w["size"] for w in line)
+        # median (name says what it is); `.get` with a body-size fallback so
+        # a word missing the `size` attr on a malformed PDF can't raise KeyError
+        # and abort extraction of the whole document.
+        median_size = median(w.get("size", body_size) for w in line)
 
-        if avg_size >= body_size * 1.4:
+        if median_size >= body_size * 1.4:
             blocks.append(Block(type=BlockType.HEADING, text=text, level=1, page_number=page_number))
             continue
-        if avg_size >= body_size * 1.2:
+        if median_size >= body_size * 1.2:
             blocks.append(Block(type=BlockType.HEADING, text=text, level=2, page_number=page_number))
             continue
-        if avg_size >= body_size * 1.08:
+        if median_size >= body_size * 1.08:
             blocks.append(Block(type=BlockType.HEADING, text=text, level=3, page_number=page_number))
             continue
 

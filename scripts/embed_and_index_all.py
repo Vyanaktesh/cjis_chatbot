@@ -74,7 +74,14 @@ def main() -> int:
 
     print(f"Embedding {len(all_records)} chunks (dense + sparse) in one batch...")
     t0 = time.time()
-    all_embeddings = embedder.embed([r["chunk_text"] for r in all_records])
+    try:
+        all_embeddings = embedder.embed([r["chunk_text"] for r in all_records])
+    except Exception as exc:
+        # The per-source extract (above) and index (below) loops are each
+        # guarded; without this, one embedding failure would discard the
+        # whole run after all extraction work is already done.
+        print(f"ERROR: embedding failed, aborting run: {exc}")
+        return 1
     elapsed = time.time() - t0
     print(f"Done in {elapsed:.1f}s ({elapsed / max(1, len(all_records)):.2f}s/chunk).\n")
 

@@ -29,6 +29,19 @@ class Settings(BaseSettings):
     postgres_db: str = "rag_chatbot"
     postgres_user: str = "rag_admin"
     postgres_password: str = "change_me_dev_only"
+    # Connection pool bounds + safety timeouts (see app/db/connection.py).
+    # A per-request new connection exhausts Postgres under load; the pool
+    # caps concurrent connections. connect_timeout bounds how long a dead
+    # DB can block; statement_timeout bounds a runaway query.
+    postgres_pool_min: int = 1
+    postgres_pool_max: int = 20
+    postgres_connect_timeout: int = 10
+    postgres_statement_timeout_ms: int = 30000
+    # How long to wait for a free pooled connection when all are in use
+    # before giving up. psycopg2's pool raises immediately on exhaustion, so
+    # get_conn retries within this window to turn a burst into a short wait
+    # instead of a hard error.
+    postgres_pool_acquire_timeout: float = 10.0
 
     # --- Qdrant ---
     qdrant_host: str = "localhost"

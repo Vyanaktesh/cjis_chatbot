@@ -27,11 +27,20 @@ class SourceVersion:
     created_at: Optional[datetime] = None
 
 
+# Explicit column list (never `SELECT *`): a new column on source_versions
+# must not become an unexpected kwarg to SourceVersion(**row) and break every
+# read. Hardcoded constant, so interpolating it into SQL is safe.
+_COLUMNS = (
+    "id, source_id, version, content_hash, retrieval_date, source_last_modified, "
+    "raw_content_path, extracted_text_path, fetch_status, created_at"
+)
+
+
 def get_latest_version(conn, source_id: UUID) -> Optional[SourceVersion]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            """
-            SELECT * FROM source_versions
+            f"""
+            SELECT {_COLUMNS} FROM source_versions
             WHERE source_id = %s
             ORDER BY version DESC
             LIMIT 1;
@@ -65,7 +74,7 @@ def create_version(
                 fetch_status
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING *;
+            RETURNING """ + _COLUMNS + """;
             """,
             (
                 str(source_id), next_version, content_hash, retrieval_date,
@@ -80,7 +89,7 @@ def create_version(
 def list_versions(conn, source_id: UUID) -> list[SourceVersion]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            "SELECT * FROM source_versions WHERE source_id = %s ORDER BY version;",
+            f"SELECT {_COLUMNS} FROM source_versions WHERE source_id = %s ORDER BY version;",
             (str(source_id),),
         )
         rows = cur.fetchall()
