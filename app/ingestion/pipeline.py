@@ -43,6 +43,11 @@ def chunk_id_for(source_version_id, chunk_index: int) -> uuid.UUID:
 
 def extract_and_chunk(source: Source, version: SourceVersion) -> list[dict[str, Any]]:
     raw_path = REPO_ROOT / version.raw_content_path
+    if not raw_path.is_file():
+        raise FileNotFoundError(
+            f"raw content for source {source.id} version {version.version} is missing "
+            f"at {raw_path} (raw_content_path={version.raw_content_path!r})"
+        )
     raw_bytes = raw_path.read_bytes()
     blocks = extract_pdf(raw_bytes) if source.source_type == "pdf" else extract_html(raw_bytes)
     chunks = chunk_blocks(blocks)
@@ -104,6 +109,14 @@ def index_records(
     scope for this phase — but the specific failure mode that actually
     occurred is closed off.
     """
+    # Guard the one-embedding-per-record invariant explicitly. `zip` below
+    # silently truncates on a mismatch, which would index some records into
+    # Postgres but never into Qdrant -- a silent cross-store drift. Fail loud.
+    if len(records) != len(embeddings):
+        raise ValueError(
+            f"records/embeddings length mismatch: {len(records)} records vs "
+            f"{len(embeddings)} embeddings -- refusing to index a partial set"
+        )
     for record in records:
         db_record = dict(record)
         db_record["embedding_model"] = MODEL_NAME

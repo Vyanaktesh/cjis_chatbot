@@ -7,11 +7,9 @@ in both Postgres and Qdrant, and this upsert updates it in place rather
 than duplicating it.
 """
 
-from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-import psycopg2.extras
 from psycopg2.extras import RealDictCursor
 
 

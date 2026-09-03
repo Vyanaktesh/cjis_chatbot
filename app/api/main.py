@@ -46,7 +46,7 @@ from pydantic import BaseModel, field_validator
 from app.core.config import get_settings
 from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
-from app.generation.service import answer_question
+from app.generation.service import GENERATION_UNAVAILABLE_ANSWER, answer_question
 from app.integrations import hubspot
 from app.retrieval.retriever import search as retrieval_search
 from app.vectorstore.qdrant_store import get_qdrant_client
@@ -138,16 +138,27 @@ def generate(body: GenerateRequest):
     """
     limit = max(1, min(body.limit, 20))
     history = [h.model_dump() for h in body.history] if body.history else None
-    return answer_question(
-        body.query,
-        limit=limit,
-        service_category=body.service_category,
-        canonical=body.canonical,
-        source_id=body.source_id,
-        jurisdiction=body.jurisdiction,
-        applicant_variant=body.applicant_variant,
-        history=history,
-    )
+    try:
+        return answer_question(
+            body.query,
+            limit=limit,
+            service_category=body.service_category,
+            canonical=body.canonical,
+            source_id=body.source_id,
+            jurisdiction=body.jurisdiction,
+            applicant_variant=body.applicant_variant,
+            history=history,
+        )
+    except Exception as exc:  # noqa: BLE001 -- last-resort guard, logged below
+        logger.exception("generate pipeline failed")
+        return {
+            "query": body.query,
+            "answer": GENERATION_UNAVAILABLE_ANSWER,
+            "grounded": False,
+            "citations": [],
+            "retrieved_count": 0,
+            "generation_error": str(exc),
+        }
 
 
 class ChatRequest(BaseModel):
@@ -173,8 +184,30 @@ def chat(body: ChatRequest):
     """
     session_id = body.session_id or str(uuid.uuid4())
     history = [h.model_dump() for h in body.history] if body.history else None
-    result = answer_question(body.message, history=history)
+    result = _answer_or_degrade(body.message, history)
     return {"session_id": session_id, **result}
+
+
+def _answer_or_degrade(query: str, history):
+    """Runs the RAG pipeline, but never lets an infrastructure failure
+    (Qdrant/Postgres/embedding-model down) surface as a raw 500 with a
+    traceback to the browser. answer_question already degrades gracefully on
+    a *generation* backend failure; this covers the retrieval/embedding
+    steps that run before generation. `generation_error` is set so the
+    widget treats it as a transient outage ("try again") rather than a
+    genuine can't-answer that offers human escalation."""
+    try:
+        return answer_question(query, history=history)
+    except Exception as exc:  # noqa: BLE001 -- last-resort guard, logged below
+        logger.exception("chat/generate pipeline failed")
+        return {
+            "query": query,
+            "answer": GENERATION_UNAVAILABLE_ANSWER,
+            "grounded": False,
+            "citations": [],
+            "retrieved_count": 0,
+            "generation_error": str(exc),
+        }
 
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -275,9 +308,10 @@ async def submit_citizen_corner(
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="not a valid email address")
     if submission_type not in hubspot.CITIZEN_SUBMISSION_TYPES:
+        allowed = ", ".join(hubspot.CITIZEN_SUBMISSION_TYPES)
         raise HTTPException(
             status_code=422,
-            detail=f"submission_type must be one of {hubspot.CITIZEN_SUBMISSION_TYPES}",
+            detail=f"submission_type must be one of: {allowed}.",
         )
 
     photo_bytes = None
@@ -286,8 +320,14 @@ async def submit_citizen_corner(
     if photo is not None and photo.filename:
         if photo.content_type not in _ALLOWED_PHOTO_CONTENT_TYPES:
             raise HTTPException(status_code=422, detail="Photo must be a JPEG, PNG, WEBP, or GIF image.")
+        # Reject oversized uploads BEFORE buffering the whole file into
+        # memory. Starlette populates UploadFile.size from the multipart
+        # part headers when present; without this guard a malicious large
+        # upload would be fully read into RAM only to be rejected below.
+        if photo.size is not None and photo.size > _MAX_PHOTO_BYTES:
+            raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
         photo_bytes = await photo.read()
-        if len(photo_bytes) > _MAX_PHOTO_BYTES:
+        if len(photo_bytes) > _MAX_PHOTO_BYTES:  # fallback when .size was unset
             raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
         photo_filename = photo.filename
         photo_content_type = photo.content_type

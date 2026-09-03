@@ -23,9 +23,9 @@ import hashlib
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from email.utils import parsedate_to_datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from playwright.sync_api import sync_playwright
 
@@ -173,7 +173,7 @@ def fetch_one(
     base_delay_seconds: float = 1.0,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     check_robots: bool = True,
-    attempt_callback: Optional[callable] = None,
+    attempt_callback: Optional[Callable[..., None]] = None,
 ) -> FetchResult:
     """
     Fetches a single URL with retries + exponential backoff. Never raises —

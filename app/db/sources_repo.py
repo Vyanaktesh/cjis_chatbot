@@ -5,7 +5,7 @@ Upserts key on `url` (the natural unique key), so re-running the loader
 against the same registry file is always safe.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -28,6 +28,15 @@ class Source:
     source_group: Optional[str]
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+# Explicit column list (never `SELECT *`): a column added to the `sources`
+# table must not be passed as an unexpected kwarg to Source(**row) and break
+# every read path. A hardcoded constant, so interpolating it into SQL is safe.
+_COLUMNS = (
+    "id, url, source_type, service_category, canonical, jurisdiction, "
+    "applicant_variant, active, notes, title, source_group, created_at, updated_at"
+)
 
 
 def upsert_source(
@@ -79,20 +88,20 @@ def upsert_source(
 
 def get_by_url(conn, url: str) -> Optional[Source]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM sources WHERE url = %s;", (url,))
+        cur.execute(f"SELECT {_COLUMNS} FROM sources WHERE url = %s;", (url,))
         row = cur.fetchone()
     return Source(**row) if row else None
 
 
 def get_by_id(conn, source_id: UUID) -> Optional[Source]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM sources WHERE id = %s;", (str(source_id),))
+        cur.execute(f"SELECT {_COLUMNS} FROM sources WHERE id = %s;", (str(source_id),))
         row = cur.fetchone()
     return Source(**row) if row else None
 
 
 def list_sources(conn, active_only: bool = True) -> list[Source]:
-    query = "SELECT * FROM sources"
+    query = f"SELECT {_COLUMNS} FROM sources"
     if active_only:
         query += " WHERE active = true"
     query += " ORDER BY source_group, title;"

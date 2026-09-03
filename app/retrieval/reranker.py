@@ -22,6 +22,7 @@ cached after (~1.1GB) -- no third-party API call, stays self-hostable.
 """
 
 import sys
+import threading
 import types
 
 from app.core.logging_config import get_logger
@@ -29,6 +30,10 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+
+# Serializes the one-time class-level model load -- see the same guard in
+# app.embedding.bge_m3 for why (concurrent cold-start double-load / OOM).
+_load_lock = threading.Lock()
 
 
 def _ensure_datasets_importable() -> None:
@@ -54,11 +59,15 @@ class Reranker:
 
     def __init__(self):
         if Reranker._model is None:
-            _ensure_datasets_importable()
-            from FlagEmbedding import FlagReranker
+            with _load_lock:
+                if Reranker._model is None:  # double-checked under the lock
+                    _ensure_datasets_importable()
+                    from FlagEmbedding import FlagReranker
 
-            logger.info(f"loading {RERANKER_MODEL_NAME} (first call in this process only)...")
-            Reranker._model = FlagReranker(RERANKER_MODEL_NAME, use_fp16=False, devices=["cpu"])
+                    logger.info(f"loading {RERANKER_MODEL_NAME} (first call in this process only)...")
+                    Reranker._model = FlagReranker(
+                        RERANKER_MODEL_NAME, use_fp16=False, devices=["cpu"]
+                    )
         self._model = Reranker._model
 
     def rerank(self, query: str, candidates: list[dict], *, limit: int) -> list[dict]:

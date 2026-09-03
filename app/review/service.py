@@ -39,10 +39,13 @@ def decide_chunk(
     if chunk is None:
         raise ChunkNotFound(str(chunk_id))
 
+    # Do BOTH Postgres writes first, then update Qdrant last. If the Qdrant
+    # update raises, the exception propagates and get_conn rolls the whole
+    # Postgres transaction back, so the two stores revert together (both
+    # keep the old status) rather than drifting. Ordering Qdrant in the
+    # middle -- as this did before -- meant a failure in log_event AFTER the
+    # Qdrant write left Qdrant updated but Postgres rolled back.
     set_review_status(conn, chunk_id, decision)
-    if chunk.get("qdrant_point_id"):
-        set_payload_fields(qdrant_client, [chunk["qdrant_point_id"]], {"review_status": decision})
-
     log_event(
         conn,
         entity_type="chunk",
@@ -51,6 +54,9 @@ def decide_chunk(
         actor=actor,
         details={"reason": reason} if reason else None,
     )
+    if chunk.get("qdrant_point_id"):
+        set_payload_fields(qdrant_client, [chunk["qdrant_point_id"]], {"review_status": decision})
+
     return {
         "chunk_id": str(chunk_id),
         "source_id": str(chunk["source_id"]),
