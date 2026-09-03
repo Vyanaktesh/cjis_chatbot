@@ -112,6 +112,37 @@ class Settings(BaseSettings):
     gemini_max_output_tokens: int = 1024
     gemini_thinking_budget: int = 0
 
+    # --- HubSpot escalation (Phase 8 follow-up) ---
+    # When the chatbot can't ground an answer (see app/generation/service.py's
+    # OUT_OF_SCOPE_ANSWER / NO_CONTEXT_ANSWER / GENERATION_UNAVAILABLE_ANSWER
+    # -- all set grounded=False), the widget offers to escalate to a human:
+    # a Contact is created/updated by email, then a Ticket is created and
+    # associated to it, landing in a real HubSpot Service Hub queue a
+    # consulate staff member can reply from. Server-side only -- this token
+    # is never sent to the frontend. Get one from a HubSpot private app
+    # (Settings > Integrations > Private Apps) with crm.objects.contacts.write
+    # and crm.objects.tickets.write scopes.
+    hubspot_access_token: str | None = None
+    # HubSpot's default Support Pipeline ("0") and its first stage ("1") --
+    # works out of the box on a fresh portal. Point these at a specific
+    # pipeline/stage (Settings > Objects > Tickets > Pipelines) once one
+    # exists for this chatbot specifically.
+    hubspot_ticket_pipeline_id: str = "0"
+    hubspot_ticket_stage_id: str = "1"
+
+    # --- HubSpot Citizen Corner (testimonials/feedback/photos, PRD FR-5.x) ---
+    # Separate dedicated pipeline from the escalation one above -- keeps
+    # citizen feedback visually/operationally apart from real service
+    # tickets on the HubSpot board. None until the pipeline + its "Pending
+    # Review" stage + the "files" scope + two custom ticket properties
+    # (is_anonumous, photo_url) are created on the HubSpot side (planned:
+    # in person at the CJS office) -- see
+    # app.integrations.hubspot.create_citizen_submission, which raises a
+    # clear HubSpotError rather than a confusing failure if this is still
+    # unset when a submission comes in.
+    hubspot_citizen_pipeline_id: str | None = None
+    hubspot_citizen_stage_pending_id: str | None = None
+
     @property
     def postgres_dsn(self) -> str:
         return (

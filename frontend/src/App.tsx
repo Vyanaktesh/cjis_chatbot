@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
-import { backendAdapter, resetSession } from "./chat/backendAdapter";
+import {
+  createBackendAdapter,
+  resetSession,
+  type ChatResponse,
+} from "./chat/backendAdapter";
 import { ChatWidget } from "./chat/ChatWidget";
 
 /**
@@ -12,19 +16,21 @@ import { ChatWidget } from "./chat/ChatWidget";
  */
 function DemoPage() {
   return (
-    <div className="min-h-screen bg-slate-100">
-      <header className="border-b border-slate-200 bg-white">
+    <div className="min-h-screen bg-[var(--cc-bg)] transition-colors">
+      <header className="border-b border-[var(--cc-border)] bg-[var(--cc-surface)]">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-full bg-[var(--brand-blue)]" />
             <div>
-              <p className="text-sm font-semibold text-slate-800">
+              <p className="text-sm font-semibold text-[var(--cc-text)]">
                 Consulate General of India
               </p>
-              <p className="text-xs text-slate-500">Demo site — Phase 8</p>
+              <p className="text-xs text-[var(--cc-text-soft)]">
+                Demo site — Phase 8
+              </p>
             </div>
           </div>
-          <nav className="hidden gap-6 text-sm text-slate-600 sm:flex">
+          <nav className="hidden gap-6 text-sm text-[var(--cc-text-soft)] sm:flex">
             <span>Passport</span>
             <span>OCI</span>
             <span>Visa</span>
@@ -34,10 +40,10 @@ function DemoPage() {
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-16">
-        <h1 className="text-3xl font-semibold text-slate-800">
+        <h1 className="text-3xl font-semibold text-[var(--cc-text)]">
           Consular services
         </h1>
-        <p className="mt-3 max-w-2xl text-slate-600">
+        <p className="mt-3 max-w-2xl text-[var(--cc-text-soft)]">
           This placeholder page stands in for the real consulate site. The
           chat widget in the bottom-right corner is the actual Phase 8
           deliverable — it talks to the FastAPI backend built in Phases
@@ -60,11 +66,16 @@ function DemoPage() {
  * it) and construct a brand new one -- a fresh, empty thread.
  */
 function ChatRuntime({ onClosed }: { onClosed: () => void }) {
-  const runtime = useLocalRuntime(backendAdapter);
+  const [lastResult, setLastResult] = useState<ChatResponse | null>(null);
+  // useMemo, not a fresh function every render: useLocalRuntime should keep
+  // the same adapter identity across re-renders (setLastResult below is one),
+  // not tear down and recreate the underlying runtime each time.
+  const adapter = useMemo(() => createBackendAdapter(setLastResult), []);
+  const runtime = useLocalRuntime(adapter);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ChatWidget onClosed={onClosed} />
+      <ChatWidget onClosed={onClosed} lastResult={lastResult} />
     </AssistantRuntimeProvider>
   );
 }

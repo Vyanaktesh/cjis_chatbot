@@ -35,21 +35,24 @@ PII storage beyond the session" true by construction rather than by a
 retention policy anyone has to trust.
 """
 
+import re
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.config import get_settings
-from app.core.logging_config import configure_logging
+from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
 from app.generation.service import answer_question
+from app.integrations import hubspot
 from app.retrieval.retriever import search as retrieval_search
 from app.vectorstore.qdrant_store import get_qdrant_client
 
 configure_logging(get_settings().log_level)
+logger = get_logger(__name__)
 
 app = FastAPI(title="Consulate RAG Chatbot — Public API", version="0.9.0")
 
@@ -172,3 +175,139 @@ def chat(body: ChatRequest):
     history = [h.model_dump() for h in body.history] if body.history else None
     result = answer_question(body.message, history=history)
     return {"session_id": session_id, **result}
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class SupportTicketRequest(BaseModel):
+    name: str
+    email: str
+    city: str
+    state: str
+    message: str
+    session_id: Optional[str] = None
+
+    @field_validator("name", "city", "state", "message")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, v: str) -> str:
+        v = v.strip()
+        if not _EMAIL_RE.match(v):
+            raise ValueError("not a valid email address")
+        return v
+
+
+class SupportTicketResponse(BaseModel):
+    ticket_id: str
+
+
+@app.post("/support/ticket", response_model=SupportTicketResponse)
+def create_support_ticket(body: SupportTicketRequest):
+    """
+    Escalation path for when the chatbot can't ground an answer (see
+    app/generation/service.py's OUT_OF_SCOPE_ANSWER / NO_CONTEXT_ANSWER /
+    GENERATION_UNAVAILABLE_ANSWER, all of which set grounded=False -- the
+    widget offers this form specifically in that case). Creates/updates a
+    HubSpot Contact by email and a Ticket associated to it -- see
+    app/integrations/hubspot.py.
+    """
+    try:
+        ticket_id = hubspot.create_support_ticket(
+            name=body.name,
+            email=body.email,
+            city=body.city,
+            state=body.state,
+            message=body.message,
+        )
+    except hubspot.HubSpotError as exc:
+        logger.warning(f"HubSpot ticket creation failed (session={body.session_id}): {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not submit your query right now. Please try again in a moment, or contact the consulate directly.",
+        ) from exc
+    return {"ticket_id": ticket_id}
+
+
+# Citizen Corner (PRD FR-5.1-5.8): testimonials/feedback/photos, separate
+# from the support-escalation ticket above. Placeholder limits below --
+# not yet informed by "D8" (the actual consent/acceptance rules doc,
+# not available at the time this was written); tighten/adjust once it is.
+_MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8MB
+_ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+class CitizenSubmissionResponse(BaseModel):
+    ticket_id: str
+
+
+@app.post("/citizen-corner/submit", response_model=CitizenSubmissionResponse)
+async def submit_citizen_corner(
+    name: str = Form(...),
+    email: str = Form(...),
+    title: str = Form(...),
+    content: str = Form(...),
+    submission_type: str = Form(...),
+    anonymous: bool = Form(False),
+    photo: Optional[UploadFile] = File(None),
+):
+    """
+    A citizen may share a testimonial, feedback, or photo at any point,
+    independent of the Q&A/escalation flow above (FR-5.1). Nothing here
+    is published directly -- see app/integrations/hubspot.py's
+    create_citizen_submission for how this lands in HubSpot's moderation
+    queue (FR-5.3), and that module's HubSpotError message for what still
+    needs setting up there before this endpoint works end-to-end.
+    """
+    name = name.strip()
+    email = email.strip()
+    title = title.strip()
+    content = content.strip()
+    if not name or not email or not title or not content:
+        raise HTTPException(status_code=422, detail="name, email, title, and content are all required.")
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="not a valid email address")
+    if submission_type not in hubspot.CITIZEN_SUBMISSION_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"submission_type must be one of {hubspot.CITIZEN_SUBMISSION_TYPES}",
+        )
+
+    photo_bytes = None
+    photo_filename = None
+    photo_content_type = None
+    if photo is not None and photo.filename:
+        if photo.content_type not in _ALLOWED_PHOTO_CONTENT_TYPES:
+            raise HTTPException(status_code=422, detail="Photo must be a JPEG, PNG, WEBP, or GIF image.")
+        photo_bytes = await photo.read()
+        if len(photo_bytes) > _MAX_PHOTO_BYTES:
+            raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
+        photo_filename = photo.filename
+        photo_content_type = photo.content_type
+
+    try:
+        ticket_id = hubspot.create_citizen_submission(
+            name=name,
+            email=email,
+            title=title,
+            content=content,
+            anonymous=anonymous,
+            submission_type=submission_type,
+            photo_bytes=photo_bytes,
+            photo_filename=photo_filename,
+            photo_content_type=photo_content_type,
+        )
+    except hubspot.HubSpotError as exc:
+        logger.warning(f"Citizen Corner submission failed: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not submit your feedback right now. Please try again in a moment.",
+        ) from exc
+    return {"ticket_id": ticket_id}
