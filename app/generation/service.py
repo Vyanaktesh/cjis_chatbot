@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
+from app.embedding.bge_m3 import BgeM3Embedder
 from app.generation.prompt import build_rag_messages, extract_cited_indices, strip_thinking
 from app.retrieval.retriever import probe_relevance
 from app.retrieval.retriever import search as retrieval_search
@@ -19,8 +20,8 @@ from app.retrieval.retriever import search as retrieval_search
 logger = get_logger(__name__)
 
 GENERATION_UNAVAILABLE_ANSWER = (
-    "The answer generation service is temporarily unavailable (it may be "
-    "rate-limited or briefly down). Please wait a moment and try again."
+    "Sorry, the service is temporarily down. Please wait a moment and try "
+    "again."
 )
 
 
@@ -92,6 +93,12 @@ def answer_question(
     search_query = _retrieval_query(query, history)
     settings = get_settings()
 
+    # Embedded once here and handed to both probe_relevance() and
+    # retrieval_search() below -- they used to each embed search_query
+    # independently, paying BGE-M3 inference cost twice per turn for
+    # identical input. Small (~0.5-1s) but free to eliminate.
+    [query_embedding] = BgeM3Embedder(batch_size=1).embed([search_query])
+
     relevance = probe_relevance(
         search_query,
         service_category=service_category,
@@ -99,6 +106,7 @@ def answer_question(
         source_id=source_id,
         jurisdiction=jurisdiction,
         applicant_variant=applicant_variant,
+        query_embedding=query_embedding,
     )
     if relevance < settings.retrieval_min_relevance:
         logger.info(f"declined as out of scope (relevance={relevance:.3f}): {query!r}")
@@ -118,6 +126,7 @@ def answer_question(
         source_id=source_id,
         jurisdiction=jurisdiction,
         applicant_variant=applicant_variant,
+        query_embedding=query_embedding,
     )
 
     if not chunks:

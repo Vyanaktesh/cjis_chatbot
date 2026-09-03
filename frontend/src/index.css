@@ -1,16 +1,112 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&display=swap");
 @import "tailwindcss";
 
 /*
- * Consulate brand palette. Deliberately kept as plain CSS variables (not a
- * Tailwind theme extension) so this is trivially copy-pasteable into the
- * real consulate site's stylesheet later — swap these three values and the
- * whole widget re-themes.
+ * Theme tokens for the DOST chat widget.
+ *
+ * Two layers, deliberately separated:
+ *   1. --brand-* : the DOST government identity (blue accent). Copy-paste
+ *      these three into the real consulate site to re-theme.
+ *   2. --cc-*    : semantic surface/text/border tokens the components
+ *      actually style against. These flip between light and dark, so every
+ *      component reads a token (bg-[var(--cc-surface)]) rather than a fixed
+ *      Tailwind color (bg-white) -- that indirection is what makes one dark
+ *      mode possible without touching every className.
+ *
+ * Theme resolution (three states):
+ *   - bare :root                  -> light palette
+ *   - @media (prefers-color-scheme: dark), un-overridden -> dark palette
+ *   - .cc-theme-light / .cc-theme-dark on the widget root -> explicit
+ *     manual toggle wins over the OS preference, both directions.
  */
 :root {
   --brand-blue: #1a4f8b;
   --brand-blue-dark: #123963;
   --brand-blue-light: #eaf2fb;
+
+  /* Light surfaces */
+  --cc-bg: #f7f8fa;
+  --cc-surface: #ffffff;
+  --cc-surface-2: #f1f3f6;
+  --cc-elevated: #ffffff;
+  --cc-border: #e4e7ec;
+  --cc-border-soft: #eef1f4;
+  --cc-border-strong: #d3d8e0;
+
+  /* Light text */
+  --cc-text: #1a2027;
+  --cc-text-soft: #5a6572;
+  --cc-text-faint: #8a94a0;
+
+  /* Accent (DOST blue in light) */
+  --cc-accent: var(--brand-blue);
+  --cc-accent-hover: var(--brand-blue-dark);
+  --cc-accent-soft: var(--brand-blue-light);
+  --cc-accent-ink: #ffffff;
+  --cc-accent-text: var(--brand-blue);
+
+  --cc-scrollbar: #cbd5e1;
+  --cc-shadow: 0 1px 2px rgba(16, 24, 40, 0.04),
+    0 12px 32px -8px rgba(16, 24, 40, 0.12);
+  --cc-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --cc-ring: rgba(26, 79, 139, 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.cc-theme-light) {
+    --cc-bg: #0c0d0f;
+    --cc-surface: #17181b;
+    --cc-surface-2: #1f2125;
+    --cc-elevated: #1c1e22;
+    --cc-border: #2a2d33;
+    --cc-border-soft: #212429;
+    --cc-border-strong: #363a42;
+
+    --cc-text: #ededee;
+    --cc-text-soft: #a4abb5;
+    --cc-text-faint: #6f7680;
+
+    /* Brighter accent so DOST blue still reads on near-black */
+    --cc-accent: #4d95df;
+    --cc-accent-hover: #6aa8e8;
+    --cc-accent-soft: #17324c;
+    --cc-accent-ink: #ffffff;
+    --cc-accent-text: #7cb4ec;
+
+    --cc-scrollbar: #3a3f47;
+    --cc-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
+      0 16px 40px -8px rgba(0, 0, 0, 0.6);
+    --cc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --cc-ring: rgba(77, 149, 223, 0.28);
+  }
+}
+
+/* Explicit manual toggle -- mirrors the dark block above so it wins over
+   the OS preference in both directions. */
+.cc-theme-dark {
+  --cc-bg: #0c0d0f;
+  --cc-surface: #17181b;
+  --cc-surface-2: #1f2125;
+  --cc-elevated: #1c1e22;
+  --cc-border: #2a2d33;
+  --cc-border-soft: #212429;
+  --cc-border-strong: #363a42;
+
+  --cc-text: #ededee;
+  --cc-text-soft: #a4abb5;
+  --cc-text-faint: #6f7680;
+
+  --cc-accent: #4d95df;
+  --cc-accent-hover: #6aa8e8;
+  --cc-accent-soft: #17324c;
+  --cc-accent-ink: #ffffff;
+  --cc-accent-text: #7cb4ec;
+
+  --cc-scrollbar: #3a3f47;
+  --cc-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 16px 40px -8px rgba(0, 0, 0, 0.6);
+  --cc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --cc-ring: rgba(77, 149, 223, 0.28);
 }
 
 html,
@@ -29,14 +125,18 @@ body {
     "Segoe UI",
     Roboto,
     sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  background: var(--cc-bg);
+  color: var(--cc-text);
 }
 
-/* Thin, unobtrusive scrollbar inside the message viewport */
+/* Thin, unobtrusive scrollbar inside scrollable areas (theme-aware) */
 .consulate-scroll::-webkit-scrollbar {
   width: 6px;
 }
 .consulate-scroll::-webkit-scrollbar-thumb {
-  background-color: #cbd5e1;
+  background-color: var(--cc-scrollbar);
   border-radius: 9999px;
 }
 .consulate-scroll::-webkit-scrollbar-track {
@@ -47,7 +147,7 @@ body {
 @keyframes consulate-panel-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.97);
+    transform: translateY(12px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -55,19 +155,75 @@ body {
   }
 }
 .consulate-panel-enter {
-  animation: consulate-panel-in 180ms ease-out;
+  animation: consulate-panel-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Citation chips: group them under a small "Sources" label. Matching by
-   :first-of-type (element type, not class) so this works regardless of
-   how many text parts precede the first source part in a message. */
+/* Each message/bubble rises in as it mounts -- the small motion that reads
+   as "premium" rather than content snapping into place. */
+@keyframes consulate-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.consulate-msg-in {
+  animation: consulate-msg-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Launcher attention pulse (used once on first load) */
+@keyframes consulate-launch-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--cc-ring);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+/* Starter-prompt chips: staggered rise-in. Each chip sets its own
+   animation-delay inline so they cascade rather than appear at once. */
+@keyframes consulate-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.consulate-chip-in {
+  opacity: 0;
+  animation: consulate-chip-in 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Launcher gentle idle float, so the closed button feels alive */
+@keyframes consulate-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+.consulate-float {
+  animation: consulate-float 3.2s ease-in-out infinite;
+}
+
+/* Citation chips: group them under a small "Sources" label. */
 .citation-row {
   margin-top: 0.375rem;
 }
 .citation-row:first-of-type {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px dashed #e2e8f0;
+  border-top: 1px dashed var(--cc-border);
 }
 .citation-row:first-of-type::before {
   content: "Sources";
@@ -77,5 +233,17 @@ body {
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--cc-text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consulate-panel-enter,
+  .consulate-msg-in,
+  .consulate-chip-in,
+  .consulate-float {
+    animation: none;
+  }
+  .consulate-chip-in {
+    opacity: 1;
+  }
 }

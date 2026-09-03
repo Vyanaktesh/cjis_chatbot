@@ -19,7 +19,7 @@ comparable scales).
 from typing import Any, Optional
 
 from app.core.config import get_settings
-from app.embedding.bge_m3 import BgeM3Embedder
+from app.embedding.bge_m3 import BgeM3Embedder, EmbeddingResult
 from app.retrieval.reranker import Reranker
 from app.vectorstore.qdrant_store import build_filter, dense_search, get_qdrant_client, hybrid_search
 
@@ -56,6 +56,7 @@ def probe_relevance(
     applicant_variant: Optional[str] = None,
     embedder: Optional[BgeM3Embedder] = None,
     client=None,
+    query_embedding: Optional[EmbeddingResult] = None,
 ) -> float:
     """Cheap off-topic guardrail check: raw dense-only cosine similarity of
     `query` against the single closest approved chunk, restricted to the
@@ -63,8 +64,12 @@ def probe_relevance(
     Settings.retrieval_min_relevance's docstring for why RRF's rank-based
     score can't be thresholded) and deliberately top-1 only, since this
     exists purely to decide whether to bother with real retrieval + a
-    generation call at all, not to return usable results."""
-    embedder = embedder or BgeM3Embedder(batch_size=1)
+    generation call at all, not to return usable results.
+
+    `query_embedding`: pass a precomputed embedding (e.g. from
+    app.generation.service, which needs it again for search() right after)
+    to skip re-embedding the same query text -- BGE-M3 inference isn't
+    free, and there's no reason to pay for it twice in one turn."""
     client = client or get_qdrant_client()
 
     query_filter = build_filter(
@@ -76,7 +81,9 @@ def probe_relevance(
         applicant_variant=applicant_variant,
     )
 
-    [query_embedding] = embedder.embed([query])
+    if query_embedding is None:
+        embedder = embedder or BgeM3Embedder(batch_size=1)
+        [query_embedding] = embedder.embed([query])
     points = dense_search(client, query_embedding.dense, limit=1, query_filter=query_filter)
     return points[0].score if points else 0.0
 
@@ -94,10 +101,15 @@ def search(
     embedder: Optional[BgeM3Embedder] = None,
     client=None,
     reranker: Optional[Reranker] = None,
+    query_embedding: Optional[EmbeddingResult] = None,
 ) -> list[dict[str, Any]]:
     """Embed `query`, run hybrid dense+sparse search restricted to approved
     chunks (plus any of the optional metadata filters), and return a plain
     list of result dicts ordered by relevance.
+
+    `query_embedding`: pass a precomputed embedding to skip re-embedding --
+    see probe_relevance()'s docstring for why this matters (this is the
+    other half of the same pair of calls per turn).
 
     When `settings.retrieval_rerank` is on, the initial hybrid search pulls
     `retrieval_rerank_candidates` results instead of just `limit`, and a
@@ -112,7 +124,6 @@ def search(
     turns it on specifically for offline eval runs, where the extra
     latency is an acceptable trade for the accuracy signal.
     """
-    embedder = embedder or BgeM3Embedder(batch_size=1)
     client = client or get_qdrant_client()
     settings = get_settings()
 
@@ -125,7 +136,9 @@ def search(
         applicant_variant=applicant_variant,
     )
 
-    [query_embedding] = embedder.embed([query])
+    if query_embedding is None:
+        embedder = embedder or BgeM3Embedder(batch_size=1)
+        [query_embedding] = embedder.embed([query])
     search_limit = max(limit, settings.retrieval_rerank_candidates) if settings.retrieval_rerank else limit
     points = hybrid_search(
         client,
