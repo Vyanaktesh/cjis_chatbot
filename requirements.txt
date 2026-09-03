@@ -47,6 +47,11 @@ uvicorn[standard]==0.32.1
 python-multipart==0.0.17
 # bumped from 0.27.2 -- google-genai (below) requires httpx>=0.28.1.
 httpx==0.28.1
+# Per-IP rate limiting on app/api/main.py's public endpoints (see
+# Settings.rate_limit_*) -- confirmed working against fastapi==0.115.5 /
+# starlette==0.41.3 above, including that a 429 still carries CORS headers
+# when SlowAPIMiddleware is registered before CORSMiddleware.
+slowapi==0.1.10
 
 # --- Phase 7: generation ---
 # CPU-only llama.cpp bindings — self-hosted GGUF inference, no third-party
