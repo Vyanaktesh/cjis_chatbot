@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     qdrant_http_port: int = 6333
     qdrant_grpc_port: int = 6334
     qdrant_api_key: str | None = None
+    # Default False keeps the local-docker setup working over plain HTTP.
+    # MUST be set True for any remote/managed Qdrant, otherwise the API key
+    # above is transmitted in cleartext. Also caps how long a slow/unreachable
+    # Qdrant can block a request thread.
+    qdrant_https: bool = False
+    qdrant_timeout: float = 30.0
 
     # --- Fetcher (used starting Phase 2, defined here so config is one place) ---
     fetcher_contact_email: str = ""

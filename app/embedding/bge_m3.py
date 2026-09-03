@@ -14,6 +14,7 @@ brief (no third-party SaaS API in the core pipeline).
 """
 
 import sys
+import threading
 import types
 from dataclasses import dataclass
 
@@ -23,6 +24,12 @@ logger = get_logger(__name__)
 
 MODEL_NAME = "BAAI/bge-m3"
 DENSE_DIM = 1024
+
+# Serializes the one-time class-level model load. Without it, two requests
+# hitting a cold process concurrently could both pass the `_model is None`
+# check and each load the ~2.2GB model -- a double memory spike that can OOM
+# the modest hardware this project targets.
+_load_lock = threading.Lock()
 
 
 def _ensure_datasets_importable() -> None:
@@ -72,11 +79,17 @@ class BgeM3Embedder:
     def __init__(self, batch_size: int = 12):
         self.batch_size = batch_size
         if BgeM3Embedder._model is None:
-            _ensure_datasets_importable()
-            from FlagEmbedding import BGEM3FlagModel
+            with _load_lock:
+                # double-checked: another thread may have loaded it while we
+                # waited for the lock
+                if BgeM3Embedder._model is None:
+                    _ensure_datasets_importable()
+                    from FlagEmbedding import BGEM3FlagModel
 
-            logger.info(f"loading {MODEL_NAME} (first call in this process only)...")
-            BgeM3Embedder._model = BGEM3FlagModel(MODEL_NAME, use_fp16=False, devices=["cpu"])
+                    logger.info(f"loading {MODEL_NAME} (first call in this process only)...")
+                    BgeM3Embedder._model = BGEM3FlagModel(
+                        MODEL_NAME, use_fp16=False, devices=["cpu"]
+                    )
         self._model = BgeM3Embedder._model
 
     def embed(self, texts: list[str]) -> list[EmbeddingResult]:

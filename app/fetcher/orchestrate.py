@@ -138,10 +138,14 @@ def fetch_and_persist(
         source_last_modified=result.source_last_modified,
         fetch_status="success",
     )
-    assert version.version == next_version, (
-        f"version numbering mismatch for source {source_id}: computed {next_version}, "
-        f"DB assigned {version.version} — likely a concurrent write to the same source"
-    )
+    # Explicit raise, not assert: assertions are stripped under `python -O`,
+    # which would let a concurrent-write version mismatch silently persist a
+    # row pointing at the wrong raw file instead of failing loudly.
+    if version.version != next_version:
+        raise RuntimeError(
+            f"version numbering mismatch for source {source_id}: computed {next_version}, "
+            f"DB assigned {version.version} — likely a concurrent write to the same source"
+        )
     outcome.update(raw_path=str(raw_path), version=version.version)
 
     log_event(

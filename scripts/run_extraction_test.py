@@ -49,7 +49,7 @@ def _serialize_record(r: dict) -> dict:
     return out
 
 
-def process_one(source, version) -> list[dict]:
+def process_one(source, version) -> tuple[list[dict], list]:
     raw_path = REPO_ROOT / version.raw_content_path
     raw_bytes = raw_path.read_bytes()
 

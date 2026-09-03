@@ -26,7 +26,8 @@ def get_qdrant_client() -> QdrantClient:
         port=settings.qdrant_http_port,
         grpc_port=settings.qdrant_grpc_port,
         api_key=settings.qdrant_api_key or None,
-        https=False,
+        https=settings.qdrant_https,
+        timeout=settings.qdrant_timeout,
     )
 
 

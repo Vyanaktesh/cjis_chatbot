@@ -7,7 +7,7 @@ on government infrastructure.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
@@ -32,6 +32,8 @@ def retry_with_backoff(
     (backoff_factor ** attempt_index) between attempts. Re-raises the last
     exception if every attempt fails.
     """
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:

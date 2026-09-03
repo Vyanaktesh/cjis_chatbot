@@ -5,7 +5,7 @@ Upserts key on `url` (the natural unique key), so re-running the loader
 against the same registry file is always safe.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from uuid import UUID

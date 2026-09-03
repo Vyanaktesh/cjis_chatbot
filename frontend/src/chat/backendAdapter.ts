@@ -20,6 +20,34 @@ const API_BASE =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
   "http://127.0.0.1:8000";
 
+// Ticket/feedback submits are quick server-side (bounded by HubSpot's own
+// timeout), so cap the client wait too -- otherwise a hung connection would
+// leave the form spinner stuck forever with no error.
+const SUBMIT_TIMEOUT_MS = 30000;
+
+/** fetch() with an AbortController timeout, translating an abort into a
+ * clear, user-displayable message. */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "The request timed out. Please check your connection and try again.",
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Generated once per page load, kept only in this module's memory — never
 // written to localStorage/sessionStorage/cookies. Refreshing or closing the
 // tab loses it, which is the whole point: "session-scoped conversation, no
@@ -151,11 +179,15 @@ export type SupportTicketInput = {
 export async function submitSupportTicket(
   input: SupportTicketInput,
 ): Promise<{ ticketId: string }> {
-  const res = await fetch(`${API_BASE}/support/ticket`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...input, session_id: sessionId ?? undefined }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/support/ticket`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...input, session_id: sessionId ?? undefined }),
+    },
+    SUBMIT_TIMEOUT_MS,
+  );
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -202,10 +234,11 @@ export async function submitCitizenCorner(
   form.set("anonymous", String(input.anonymous));
   if (input.photo) form.set("photo", input.photo);
 
-  const res = await fetch(`${API_BASE}/citizen-corner/submit`, {
-    method: "POST",
-    body: form,
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/citizen-corner/submit`,
+    { method: "POST", body: form },
+    SUBMIT_TIMEOUT_MS,
+  );
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
