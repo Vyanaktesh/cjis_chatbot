@@ -9,6 +9,52 @@ No third-party SaaS APIs are required for the core pipeline (fetch → extract
 → chunk → embed → index → review → retrieve → generate), so this can
 eventually run on restricted/offline-ish government infrastructure.
 
+---
+
+## TL;DR
+
+A production-style, **self-hosted RAG chatbot** that answers consular-services questions from the office's real **47-source document registry** (gov.in / mea.gov.in / VFS pages, HTML and PDF), under a strict **citation-or-decline** policy and a **human-review gate** on every chunk the model is allowed to see.
+
+**What makes it recruiter-interesting:**
+
+- **Full pipeline, no SaaS dependencies on the hot path** — fetch (Playwright) → extract (BeautifulSoup / pdfplumber + OCR fallback) → chunk → embed (BGE-M3) → index (Qdrant) → human-review gate → hybrid retrieve (dense + BM25 + cross-encoder rerank) → generate.
+- **Human-in-the-loop by design** — every new or changed chunk lands as `pending_review`; the live chatbot can only retrieve chunks a staff member has approved.
+- **Content-change detection** — SHA-256 content hashing + version history (`source_versions`) + content-drift re-ingestion, so updated government pages don't silently diverge from what's indexed.
+- **OCR fallback carried end to end** — pages with near-zero extractable text are rasterized (`pdf2image`/`poppler`) and OCR'd (`tesseract`); the `used_ocr` flag is carried into both Postgres and every Qdrant point so retrieval quality on scanned content is debuggable.
+- **Operational hygiene** — robots.txt check per domain, exponential-backoff retries, structured JSON logging, append-only audit log, idempotent migrations, independent phase-verification reports.
+- **Companion [`cjs_evalplatform`](https://github.com/Vyanaktesh/cjs_evalplatform)** — a staff admin console that runs retrieval (Precision@K, Recall@K, Hit Rate, MRR) and generation (LLM-judged faithfulness, answer relevancy, citation accuracy) evals against a golden set of real anonymized citizen queries, and shares the same Postgres + Qdrant instances in-process (no HTTP, no sync job).
+
+### Tech stack
+
+**Backend:** Python 3.12, FastAPI, Postgres, Qdrant, Playwright (fetch), BeautifulSoup + pdfplumber + pdf2image + tesseract (extraction), BGE-M3 embeddings (`FlagEmbedding`/`torch`, CPU), cross-encoder reranker. **Frontend:** React 19 + TypeScript + Vite + Tailwind v4. **Infra:** Docker Compose (Qdrant + Postgres with healthchecks + persistent volumes).
+
+### Pipeline at a glance
+
+```
+    47-source registry (gov.in / mea.gov.in / VFS)
+                  │
+         Playwright fetch (robots-aware, retries, content hashing)
+                  │
+         Extract → structured Blocks (headings, paragraphs, list items, tables)
+         (BeautifulSoup for HTML; pdfplumber + OCR fallback for PDF)
+                  │
+         Chunk (preserves heading hierarchy; nested lists de-duped)
+                  │
+         Embed (BGE-M3, CPU) → Qdrant   +   Postgres (metadata + audit)
+                  │
+         ┌────────▼─────────┐
+         │   REVIEW GATE    │   ← staff approve/reject per chunk
+         └────────┬─────────┘
+                  │
+         Hybrid retrieve (dense + BM25 + cross-encoder rerank)
+                  │
+         Generate (citation-or-decline)   ────►   Chat API + React frontend
+```
+
+See the phase-by-phase breakdown below for exactly what each pipeline stage does, the design decisions, and the "bug found and fixed" notes.
+
+---
+
 ## Status: Phase 8 — Chat API + frontend
 
 What's here:
