@@ -71,7 +71,20 @@ def _trim_history(history: Optional[list[dict[str, str]]]) -> list[dict[str, str
         dropped = windowed.pop(0)
         total -= len(dropped["content"])
 
-    return windowed
+    # Windowing and budget-trimming can leave the history starting with an
+    # assistant turn (its question was trimmed away), and a failed earlier turn
+    # leaves two user messages in a row. Chat APIs can be strict about turn
+    # order, so: start at the first user turn, and merge back-to-back turns
+    # from the same speaker.
+    while windowed and windowed[0]["role"] != "user":
+        windowed.pop(0)
+    merged: list[dict[str, str]] = []
+    for message in windowed:
+        if merged and merged[-1]["role"] == message["role"]:
+            merged[-1] = {"role": message["role"], "content": f"{merged[-1]['content']}\n{message['content']}"}
+        else:
+            merged.append(dict(message))
+    return merged
 
 
 def build_rag_messages(

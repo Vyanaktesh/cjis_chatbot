@@ -49,6 +49,7 @@ class GeminiGenerator:
     def __init__(self):
         if GeminiGenerator._client is None:
             from google import genai
+            from google.genai import types as genai_types
 
             settings = get_settings()
             if not settings.gemini_api_key:
@@ -58,7 +59,13 @@ class GeminiGenerator:
                     "to your .env file (see .env.example)."
                 )
             logger.info(f"initializing Gemini client (model={settings.gemini_model})")
-            GeminiGenerator._client = genai.Client(api_key=settings.gemini_api_key)
+            # The SDK's default is NO timeout: one stalled call to Google would
+            # hold a worker thread indefinitely, and enough of them freeze the
+            # whole API. The SDK takes milliseconds.
+            GeminiGenerator._client = genai.Client(
+                api_key=settings.gemini_api_key,
+                http_options=genai_types.HttpOptions(timeout=int(settings.gemini_timeout_seconds * 1000)),
+            )
         self._client = GeminiGenerator._client
 
     def generate(
@@ -88,6 +95,9 @@ class GeminiGenerator:
 
         attempts = len(_RATE_LIMIT_RETRY_DELAYS) + 1
         last_error: Optional[Exception] = None
+        # Per-call timeout x retries could otherwise add up to well over a
+        # minute while the visitor waits; stop retrying once the budget is spent.
+        deadline = time.monotonic() + settings.gemini_total_budget_seconds
         for attempt in range(attempts):
             try:
                 response = self._client.models.generate_content(
@@ -108,6 +118,11 @@ class GeminiGenerator:
                         f"Gemini API error (code={exc.code}): {exc.message or exc}"
                     ) from exc
                 delay = _RATE_LIMIT_RETRY_DELAYS[attempt]
+                if time.monotonic() + delay >= deadline:
+                    logger.warning(f"Gemini API error (code={exc.code}); retry budget spent, giving up")
+                    raise GenerationUnavailable(
+                        f"Gemini API error (code={exc.code}) and the retry time budget is spent"
+                    ) from exc
                 logger.warning(
                     f"Gemini API error (code={exc.code}), retrying in {delay}s "
                     f"(attempt {attempt + 1}/{len(_RATE_LIMIT_RETRY_DELAYS)})..."
@@ -146,5 +161,11 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> tuple[Optional[str], 
             )
             continue
         gemini_role = "model" if role == "assistant" else "user"
-        contents.append({"role": gemini_role, "parts": [{"text": content}]})
+        if contents and contents[-1]["role"] == gemini_role:
+            # Two turns in a row from the same side (e.g. an earlier question
+            # whose answer failed, followed by the new one): the API expects
+            # alternating turns, so fold them into one turn with two parts.
+            contents[-1]["parts"].append({"text": content})
+        else:
+            contents.append({"role": gemini_role, "parts": [{"text": content}]})
     return system_instruction, contents

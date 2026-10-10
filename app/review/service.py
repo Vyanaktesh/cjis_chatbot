@@ -24,6 +24,14 @@ class ChunkNotFound(Exception):
     pass
 
 
+class ChunkNotReviewable(ChunkNotFound):
+    """The chunk exists but can't be approved/rejected any more (it has been
+    superseded by a newer version of its source). A subclass of ChunkNotFound so
+    existing callers that only handle "not found" keep working (they report it
+    as a missing chunk); callers that want the precise reason can catch this
+    first."""
+
+
 def decide_chunk(
     conn,
     qdrant_client,
@@ -35,9 +43,15 @@ def decide_chunk(
     if decision not in VALID_DECISIONS:
         raise ValueError(f"decision must be one of {sorted(VALID_DECISIONS)}, got {decision!r}")
 
-    chunk = get_chunk(conn, chunk_id)
+    chunk = get_chunk(conn, chunk_id, for_update=True)
     if chunk is None:
         raise ChunkNotFound(str(chunk_id))
+    if chunk["review_status"] == "superseded":
+        # Approving one would put an old version's text (an outdated fee, say)
+        # back in front of visitors.
+        raise ChunkNotReviewable(
+            f"chunk {chunk_id} has been superseded by a newer version and can't be {decision}"
+        )
 
     # Do BOTH Postgres writes first, then update Qdrant last. If the Qdrant
     # update raises, the exception propagates and get_conn rolls the whole

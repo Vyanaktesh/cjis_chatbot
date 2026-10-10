@@ -5,6 +5,7 @@ Phase 2 smoke test (a handful of sources) and the full registry fetch (all
 raw files, and audit_log rows get written.
 """
 
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -13,9 +14,43 @@ from uuid import UUID
 
 from app.db.audit_repo import log_event
 from app.db.source_versions_repo import create_version, get_latest_version
+from app.extraction.html_extractor import extract_html
 from app.fetcher.playwright_fetcher import fetch_one
 
 RAW_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "raw"
+
+
+def _extracted_text_fingerprint(content: bytes) -> str:
+    """Hash of the page's extracted TEXT (what actually becomes chunks), not of
+    its raw markup."""
+    text = "\n".join(block.text for block in extract_html(content))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def same_extracted_text(
+    source_type: str,
+    previous_raw_path: str,
+    new_content: bytes,
+    *,
+    base_dir: Optional[Path] = None,
+) -> bool:
+    """True when an HTML page's text is identical to the stored previous
+    version even though its raw bytes differ.
+
+    The fetcher saves the *rendered* page, which usually differs on every
+    fetch (timestamps, tokens, visitor counters, ad slots) without any real
+    change to the content. Comparing raw hashes made each of those a "new
+    version", which supersedes the approved chunks and leaves the chatbot
+    with nothing approved for that source until someone reviews them again.
+    PDFs are compared by their bytes, as before."""
+    if source_type != "html":
+        return False
+    try:
+        base = base_dir or RAW_STORAGE_DIR.parent.parent
+        previous = (base / previous_raw_path).read_bytes()
+        return _extracted_text_fingerprint(previous) == _extracted_text_fingerprint(new_content)
+    except Exception:  # noqa: BLE001 -- if the old file is missing/unreadable, treat the page as changed
+        return False
 
 
 def _local_filename(url: str, source_type: str) -> str:
@@ -99,7 +134,13 @@ def fetch_and_persist(
         return outcome
 
     latest = get_latest_version(conn, source_id)
-    if latest is not None and latest.content_hash == result.content_hash:
+    identical_bytes = latest is not None and latest.content_hash == result.content_hash
+    identical_text = (
+        latest is not None
+        and not identical_bytes
+        and same_extracted_text(source_type, latest.raw_content_path, result.content_bytes)
+    )
+    if identical_bytes or identical_text:
         outcome.update(raw_path=latest.raw_content_path, version=latest.version, unchanged=True)
         log_event(
             conn,
@@ -111,6 +152,7 @@ def fetch_and_persist(
                 "content_hash": result.content_hash,
                 "existing_version": latest.version,
                 "used_request_fallback": result.used_request_fallback,
+                "reason": "identical_bytes" if identical_bytes else "identical_extracted_text",
             },
         )
         return outcome

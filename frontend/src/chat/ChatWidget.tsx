@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import type { ChatResponse } from "./backendAdapter";
 import { playSend } from "./sound";
+import { safeUrl } from "./safeUrl";
 import { SupportTicketForm } from "./SupportTicketForm";
 import { CitizenCornerForm } from "./CitizenCornerForm";
 
@@ -117,7 +118,8 @@ const CATEGORY_STYLES: Record<string, string> = {
 };
 const DEFAULT_CATEGORY_STYLE = "bg-[var(--cc-surface-2)] text-[var(--cc-text-soft)]";
 
-function SourceChip({ url, title }: { url?: string; title?: string }) {
+function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
+  const url = safeUrl(rawUrl);
   if (!url) return null;
 
   const match = title?.match(/^\[(\d+)\]\s*(\S+)/);
@@ -464,6 +466,8 @@ function Composer() {
     <ComposerPrimitive.Root className="flex items-end gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface)] p-3">
       <ComposerPrimitive.Input
         placeholder="Ask me anything..."
+        aria-label="Your message"
+        maxLength={2000}
         rows={1}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) playSend();
@@ -622,7 +626,12 @@ function ChatPanel({
 
       {/* Thread */}
       <ThreadPrimitive.Root className="flex flex-1 flex-col overflow-hidden bg-[var(--cc-bg)]">
-        <ThreadPrimitive.Viewport className="consulate-scroll flex-1 space-y-1 overflow-y-auto py-3">
+        <ThreadPrimitive.Viewport
+          role="log"
+          aria-live="polite"
+          aria-label="Conversation"
+          className="consulate-scroll flex-1 space-y-1 overflow-y-auto py-3"
+        >
           <ThreadWelcome />
           <ThreadPrimitive.Messages
             components={{ UserMessage, AssistantMessage }}

@@ -34,3 +34,6 @@ skills-lock.json
 # --- editors / OS ---
 .DS_Store
 *.swp
+
+# stray git identity/signing config from an unrelated environment
+.gitconfig

@@ -21,9 +21,32 @@ from typing import Any, Optional
 from app.core.config import get_settings
 from app.embedding.bge_m3 import BgeM3Embedder, EmbeddingResult
 from app.retrieval.reranker import Reranker
-from app.vectorstore.qdrant_store import build_filter, dense_search, get_qdrant_client, hybrid_search
+from app.vectorstore.qdrant_store import (
+    COLLECTION_NAME,
+    build_filter,
+    dense_search,
+    get_qdrant_client,
+    hybrid_search,
+)
 
 APPROVED = "approved"
+
+
+def has_approved_content(client=None) -> bool:
+    """True if at least one approved chunk exists. Lets the caller tell "this
+    question is off-topic" apart from "nothing has been approved yet" (both
+    score 0 in probe_relevance). If the check itself fails, assume content
+    exists so a hiccup never changes which message the visitor sees."""
+    try:
+        client = client or get_qdrant_client()
+        count = client.count(
+            collection_name=COLLECTION_NAME,
+            count_filter=build_filter(review_status=APPROVED),
+            exact=False,
+        ).count
+        return count > 0
+    except Exception:  # noqa: BLE001 -- best-effort check, see docstring
+        return True
 
 
 def _point_to_result(point, rank: int) -> dict[str, Any]:

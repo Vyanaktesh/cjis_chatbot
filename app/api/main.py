@@ -36,23 +36,29 @@ retention policy anyone has to trust.
 """
 
 import re
+import threading
+import time
 import uuid
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
 
-from app.core.config import get_settings
+from app.core.config import get_settings, production_config_problems
 from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
+from app.embedding.bge_m3 import BgeM3Embedder
 from app.generation.service import GENERATION_UNAVAILABLE_ANSWER, answer_question
 from app.integrations import hubspot
+from app.integrations.images import ImageRejected, sanitize_image
 from app.retrieval.retriever import search as retrieval_search
 from app.vectorstore.qdrant_store import get_qdrant_client
 
@@ -60,7 +66,34 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
-app = FastAPI(title="Consulate RAG Chatbot — Public API", version="0.9.0")
+# Refuse to start a production deployment on unsafe defaults (wide-open CORS,
+# the development database password, ...). Does nothing unless APP_ENV=production.
+_config_problems = production_config_problems(settings)
+if _config_problems:
+    raise RuntimeError(
+        "Refusing to start with unsafe production settings:\n- " + "\n- ".join(_config_problems)
+    )
+
+
+def _warm_up() -> None:
+    try:
+        BgeM3Embedder(batch_size=1)
+        logger.info("embedding model loaded (warm-up)")
+    except Exception:  # noqa: BLE001 -- the first request will simply load it instead
+        logger.exception("embedding model warm-up failed")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Loading the embedding model takes ~15s the first time. Doing it in the
+    # background at startup means the first visitor doesn't pay for it, while
+    # the server still starts accepting requests immediately.
+    if settings.warmup_on_startup:
+        threading.Thread(target=_warm_up, name="embedding-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Consulate RAG Chatbot - Public API", version="0.9.0", lifespan=lifespan)
 
 # Rate limiting, keyed on client IP (see Settings.rate_limit_* for why: an
 # unbounded /generate or /chat could exhaust the Gemini quota or run up a
@@ -82,6 +115,67 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
+
+class RequestGuardMiddleware:
+    """Gives every request an id (returned as X-Request-ID and written to the
+    log), logs one line per request with its status and duration, and rejects
+    a request that announces a body bigger than `max_body_bytes` before the
+    server reads it. The log line carries the path only: query strings can
+    contain what a visitor typed (e.g. /search?q=...), which can be personal."""
+
+    def __init__(self, app, max_body_bytes: int):
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = uuid.uuid4().hex[:12]
+        started = time.perf_counter()
+        status = {"code": 0}
+
+        def log() -> None:
+            logger.info(
+                "request",
+                extra={
+                    "fields": {
+                        "request_id": request_id,
+                        "method": scope["method"],
+                        "path": scope["path"],
+                        "status": status["code"],
+                        "duration_ms": round((time.perf_counter() - started) * 1000),
+                    }
+                },
+            )
+
+        length = dict(scope["headers"]).get(b"content-length", b"")
+        if length.isdigit() and int(length) > self.max_body_bytes:
+            status["code"] = 413
+            response = JSONResponse(
+                {"detail": "That upload is too large."},
+                status_code=413,
+                headers={"X-Request-ID": request_id},
+            )
+            await response(scope, receive, send)
+            log()
+            return
+
+        async def send_with_id(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+                message = {**message, "headers": [*message.get("headers", []), (b"x-request-id", request_id.encode())]}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_id)
+        finally:
+            log()
+
+
+app.add_middleware(RequestGuardMiddleware, max_body_bytes=settings.max_request_body_bytes)
+
 # Phase 8: the React widget runs on its own dev-server origin (and, in
 # production, potentially a different origin than the API). CORS_ALLOWED_ORIGINS
 # defaults to "*" so local dev keeps working out of the box -- MUST be set to
@@ -102,26 +196,39 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1;")
-            cur.fetchone()
-    client = get_qdrant_client()
-    client.get_collections()
-    return {"status": "ok"}
+    """200 when Postgres and Qdrant both answer, otherwise 503 naming which
+    one(s) failed (a clean JSON reply, not a bare 500) so a load balancer or
+    uptime monitor can act on it."""
+    failing = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                cur.fetchone()
+    except Exception:  # noqa: BLE001 -- reported below, never raised to the caller
+        logger.exception("health check: postgres unavailable")
+        failing.append("postgres")
+    try:
+        get_qdrant_client().get_collections()
+    except Exception:  # noqa: BLE001
+        logger.exception("health check: qdrant unavailable")
+        failing.append("qdrant")
+    if failing:
+        return JSONResponse(status_code=503, content={"status": "unavailable", "failing": failing})
+    return {"status": "ok", "embedding_model_loaded": BgeM3Embedder._model is not None}
 
 
 @app.get("/search")
 @limiter.limit(settings.rate_limit_search)
 def search(
     request: Request,
-    q: str,
+    q: str = Query(..., min_length=1, max_length=500),
     limit: int = 8,
-    service_category: Optional[str] = None,
+    service_category: Optional[str] = Query(None, max_length=100),
     canonical: Optional[bool] = None,
-    source_id: Optional[str] = None,
-    jurisdiction: Optional[str] = None,
-    applicant_variant: Optional[str] = None,
+    source_id: Optional[str] = Query(None, max_length=100),
+    jurisdiction: Optional[str] = Query(None, max_length=100),
+    applicant_variant: Optional[str] = Query(None, max_length=100),
 ):
     """
     Phase 6: hybrid dense+sparse retrieval, hard-restricted to
@@ -141,20 +248,48 @@ def search(
     return {"query": q, "count": len(results), "results": results}
 
 
+# Limits on what a visitor (or a script pretending to be one) can send. Without
+# them a single request could carry a 500,000-character message or a
+# thousands-of-turns history -- cost on the paid model API and memory here.
+MAX_MESSAGE_CHARS = 2000
+MAX_HISTORY_TURNS = 20
+MAX_HISTORY_CONTENT_CHARS = 4000
+
+
 class ChatTurn(BaseModel):
-    role: str  # "user" | "assistant"
+    role: Literal["user", "assistant"]
     content: str
+
+    @field_validator("content")
+    @classmethod
+    def _clip(cls, v: str) -> str:
+        # Earlier ANSWERS are re-sent as history and can be long; clip rather
+        # than reject so a long answer never turns the next question into an
+        # error. prompt.py trims history much further before it reaches the model.
+        return v[:MAX_HISTORY_CONTENT_CHARS]
+
+
+def _not_blank(v: str) -> str:
+    v = v.strip()
+    if not v:
+        raise ValueError("must not be blank")
+    return v
 
 
 class GenerateRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     limit: int = 6
-    service_category: Optional[str] = None
+    service_category: Optional[str] = Field(None, max_length=100)
     canonical: Optional[bool] = None
-    source_id: Optional[str] = None
-    jurisdiction: Optional[str] = None
-    applicant_variant: Optional[str] = None
-    history: Optional[list[ChatTurn]] = None
+    source_id: Optional[str] = Field(None, max_length=100)
+    jurisdiction: Optional[str] = Field(None, max_length=100)
+    applicant_variant: Optional[str] = Field(None, max_length=100)
+    history: Optional[list[ChatTurn]] = Field(None, max_length=MAX_HISTORY_TURNS)
+
+    @field_validator("query")
+    @classmethod
+    def _query_not_blank(cls, v: str) -> str:
+        return _not_blank(v)
 
 
 @app.post("/generate")
@@ -186,20 +321,27 @@ def generate(request: Request, body: GenerateRequest):
         )
     except Exception as exc:  # noqa: BLE001 -- last-resort guard, logged below
         logger.exception("generate pipeline failed")
+        # The exception text stays in the log. It used to be returned to the
+        # browser, which leaked internals (hostnames, account names).
         return {
             "query": body.query,
             "answer": GENERATION_UNAVAILABLE_ANSWER,
             "grounded": False,
             "citations": [],
             "retrieved_count": 0,
-            "generation_error": str(exc),
+            "generation_error": "pipeline_unavailable",
         }
 
 
 class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    history: Optional[list[ChatTurn]] = None
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    session_id: Optional[str] = Field(None, max_length=64)
+    history: Optional[list[ChatTurn]] = Field(None, max_length=MAX_HISTORY_TURNS)
+
+    @field_validator("message")
+    @classmethod
+    def _message_not_blank(cls, v: str) -> str:
+        return _not_blank(v)
 
 
 @app.post("/chat")
@@ -242,7 +384,7 @@ def _answer_or_degrade(query: str, history):
             "grounded": False,
             "citations": [],
             "retrieved_count": 0,
-            "generation_error": str(exc),
+            "generation_error": "pipeline_unavailable",
         }
 
 
@@ -250,12 +392,12 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class SupportTicketRequest(BaseModel):
-    name: str
-    email: str
-    city: str
-    state: str
-    message: str
-    session_id: Optional[str] = None
+    name: str = Field(max_length=200)
+    email: str = Field(max_length=320)
+    city: str = Field(max_length=100)
+    state: str = Field(max_length=100)
+    message: str = Field(max_length=5000)
+    session_id: Optional[str] = Field(None, max_length=64)
 
     @field_validator("name", "city", "state", "message")
     @classmethod
@@ -322,11 +464,11 @@ class CitizenSubmissionResponse(BaseModel):
 @limiter.limit(settings.rate_limit_submit)
 async def submit_citizen_corner(
     request: Request,
-    name: str = Form(...),
-    email: str = Form(...),
-    title: str = Form(...),
-    content: str = Form(...),
-    submission_type: str = Form(...),
+    name: str = Form(..., max_length=200),
+    email: str = Form(..., max_length=320),
+    title: str = Form(..., max_length=200),
+    content: str = Form(..., max_length=5000),
+    submission_type: str = Form(..., max_length=30),
     anonymous: bool = Form(False),
     photo: Optional[UploadFile] = File(None),
 ):
@@ -365,11 +507,19 @@ async def submit_citizen_corner(
         # upload would be fully read into RAM only to be rejected below.
         if photo.size is not None and photo.size > _MAX_PHOTO_BYTES:
             raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
-        photo_bytes = await photo.read()
-        if len(photo_bytes) > _MAX_PHOTO_BYTES:  # fallback when .size was unset
+        raw_photo = await photo.read()
+        if len(raw_photo) > _MAX_PHOTO_BYTES:  # fallback when .size was unset
             raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
-        photo_filename = photo.filename
-        photo_content_type = photo.content_type
+        # The declared content type and filename come from the visitor's
+        # browser and prove nothing. Decode the bytes as a real image,
+        # strip location/camera metadata, and use a generated filename.
+        try:
+            photo_bytes, photo_content_type, photo_filename = await run_in_threadpool(sanitize_image, raw_photo)
+        except ImageRejected:
+            raise HTTPException(
+                status_code=422,
+                detail="That file doesn't look like a valid image. Please use a JPEG, PNG, WEBP, or GIF photo.",
+            ) from None
 
     try:
         # hubspot.* makes blocking HTTP calls (up to three in a row). This

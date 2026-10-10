@@ -217,6 +217,29 @@ uvicorn app.api.main:app --host 0.0.0.0 --port 8000 \
   The default `memory://` counts per worker, so N workers allow N times the
   limit.
 
+## Backups
+
+Reviewer decisions and the audit log live only in Postgres, and the search
+index lives only in Qdrant. Nothing else can recreate them, so back up both
+(the commands below assume the default container names from `docker-compose.yml`).
+
+```bash
+# Postgres: a plain SQL dump
+docker exec rag_postgres pg_dump -U rag_admin -d rag_chatbot > backup_postgres_$(date +%F).sql
+
+# Restore into an empty database
+docker exec -i rag_postgres psql -U rag_admin -d rag_chatbot < backup_postgres_YYYY-MM-DD.sql
+
+# Qdrant: stop it so files are consistent, copy the storage folder, start again
+docker compose stop qdrant
+cp -r data/qdrant_storage backup_qdrant_$(date +%F)
+docker compose start qdrant
+```
+
+Run the Postgres dump on a schedule (cron or Task Scheduler) and keep copies
+off this machine. Postgres is the source of truth for review status, so if
+Qdrant is lost but Postgres is intact, re-run the indexing step to rebuild it.
+
 ## Running the tests
 
 ```bash

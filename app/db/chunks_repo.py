@@ -99,9 +99,13 @@ def set_review_status(conn, chunk_id: UUID, status: str) -> None:
         )
 
 
-def get_chunk(conn, chunk_id: UUID) -> Optional[dict]:
+def get_chunk(conn, chunk_id: UUID, *, for_update: bool = False) -> Optional[dict]:
+    """`for_update=True` locks the row until the transaction ends, so two
+    reviewers deciding the same chunk at once are serialized instead of
+    interleaving their Postgres and Qdrant writes."""
+    sql = "SELECT * FROM chunks WHERE id = %s" + (" FOR UPDATE;" if for_update else ";")
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM chunks WHERE id = %s;", (str(chunk_id),))
+        cur.execute(sql, (str(chunk_id),))
         return cur.fetchone()
 
 

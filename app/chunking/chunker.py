@@ -13,12 +13,18 @@ real BGE-M3 tokenizer for embedding; if that ever disagrees meaningfully
 with this estimate, re-tune TOKEN_CHAR_RATIO then, not before.
 """
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 
 from app.extraction.blocks import Block, BlockType
 
 TOKEN_CHAR_RATIO = 4
 DEFAULT_MAX_TOKENS = 450
+# A single block (one long paragraph, one big table row) is normally kept whole
+# even if it exceeds DEFAULT_MAX_TOKENS, so a requirement is never cut in half.
+# But with no upper bound at all, the real data contained one chunk of 22,585
+# characters. Past this much, a block is split at sentence boundaries.
+HARD_MAX_TOKENS = 900
 
 
 @dataclass
@@ -107,9 +113,51 @@ def _render_block(block: Block) -> str:
     return block.text
 
 
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_oversized(block: Block, max_tokens: int) -> list[Block]:
+    """Splits a block longer than HARD_MAX_TOKENS into pieces of at most about
+    `max_tokens`, breaking at sentence ends (and, for a sentence that is itself
+    too long, at spaces). The list marker stays on the first piece only."""
+    limit = max_tokens * TOKEN_CHAR_RATIO
+    pieces: list[str] = []
+    current = ""
+
+    def add(fragment: str) -> None:
+        nonlocal current
+        if current and len(current) + 1 + len(fragment) > limit:
+            pieces.append(current)
+            current = fragment
+        else:
+            current = f"{current} {fragment}".strip()
+
+    for sentence in _SENTENCE_END_RE.split(block.text):
+        if len(sentence) <= limit:
+            add(sentence)
+            continue
+        for word in sentence.split():
+            add(word)
+    if current:
+        pieces.append(current)
+
+    return [
+        replace(block, text=piece, list_ordinal=block.list_ordinal if i == 0 else None)
+        for i, piece in enumerate(pieces)
+    ]
+
+
 def _chunk_section(blocks: list[Block], heading_trail: list[str], max_tokens: int) -> list[Chunk]:
     if not blocks:
         return []
+
+    expanded: list[Block] = []
+    for block in blocks:
+        if estimate_tokens(_render_block(block)) > HARD_MAX_TOKENS:
+            expanded.extend(_split_oversized(block, max_tokens))
+        else:
+            expanded.append(block)
+    blocks = expanded
 
     prefix = " > ".join(heading_trail) + "\n\n" if heading_trail else ""
     prefix_tokens = estimate_tokens(prefix) if prefix else 0

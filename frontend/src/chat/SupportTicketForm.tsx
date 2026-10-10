@@ -86,6 +86,7 @@ export function SupportTicketForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Full name"
+            maxLength={200}
             required
           />
         </Field>
@@ -96,6 +97,7 @@ export function SupportTicketForm({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
+            maxLength={320}
             required
           />
         </Field>
@@ -105,6 +107,7 @@ export function SupportTicketForm({
             value={city}
             onChange={(e) => setCity(e.target.value)}
             placeholder="City"
+            maxLength={100}
             required
           />
         </Field>
@@ -114,6 +117,7 @@ export function SupportTicketForm({
             value={state}
             onChange={(e) => setState(e.target.value)}
             placeholder="State"
+            maxLength={100}
             required
           />
         </Field>
@@ -125,6 +129,7 @@ export function SupportTicketForm({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
+          maxLength={5000}
           required
         />
       </Field>

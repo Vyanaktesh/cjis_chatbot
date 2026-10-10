@@ -145,6 +145,7 @@ export function CitizenCornerForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Full name"
+            maxLength={200}
             required
           />
         </Field>
@@ -155,6 +156,7 @@ export function CitizenCornerForm({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
+            maxLength={320}
             required
           />
         </Field>
@@ -193,6 +195,7 @@ export function CitizenCornerForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="A short title"
+          maxLength={200}
           required
         />
       </Field>
@@ -203,6 +206,7 @@ export function CitizenCornerForm({
           value={content}
           onChange={(e) => setContent(e.target.value)}
           rows={3}
+          maxLength={5000}
           required
         />
       </Field>

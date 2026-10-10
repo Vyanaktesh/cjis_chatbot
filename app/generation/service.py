@@ -9,16 +9,68 @@ at all when there's genuinely nothing approved to answer from.
 """
 
 import re
+from functools import lru_cache
 from typing import Any, Optional
 
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
 from app.embedding.bge_m3 import BgeM3Embedder
 from app.generation.prompt import build_rag_messages, extract_cited_indices, strip_thinking
-from app.retrieval.retriever import probe_relevance
+from app.retrieval.retriever import has_approved_content, probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
 logger = get_logger(__name__)
+
+# Short, friendly replies for greetings and thanks. These never reach retrieval
+# or the model: "hello" and "thanks" score too low against consular content, so
+# they used to be refused as "outside what I can help with", which reads as rude.
+# `smalltalk: True` in the response tells the widget not to offer the "raise a
+# query with the consulate" form for them.
+_SMALLTALK = [
+    (
+        re.compile(
+            r"^(?:hi+|hello+|hey+|heya|hiya|namaste|namaskar|greetings|"
+            r"good (?:morning|afternoon|evening))(?: (?:there|dost|team|all))?[ !.,]*$"
+        ),
+        "Hello! I can help with questions about Indian passport, OCI and visa services. What would you like to know?",
+    ),
+    (
+        re.compile(
+            r"^(?:thanks|thank you|thank u|thankyou|thx|ty|many thanks|"
+            r"thanks a lot|thank you so much|thanks so much|dhanyavad(?:am)?|shukriya)[ !.,]*$"
+        ),
+        "You're welcome! Let me know if there is anything else I can help with.",
+    ),
+    (
+        re.compile(r"^(?:bye|goodbye|good bye|see you|see ya|ok bye|okay bye|take care)[ !.,]*$"),
+        "Goodbye! Come back any time you have a question about passport, OCI or visa services.",
+    ),
+    (
+        re.compile(r"^(?:ok|okay|k|got it|cool|great|nice|alright|fine|perfect|understood)[ !.,]*$"),
+        "Glad to help! Ask me anything about passport, OCI or visa services.",
+    ),
+]
+
+
+def _smalltalk_reply(query: str) -> Optional[str]:
+    normalized = re.sub(r"\s+", " ", query.strip().lower())
+    for pattern, reply in _SMALLTALK:
+        if pattern.match(normalized):
+            return reply
+    return None
+
+
+@lru_cache(maxsize=4)
+def _domain_keyword_re(keywords: str) -> Optional["re.Pattern[str]"]:
+    words = [w.strip() for w in keywords.split(",") if w.strip()]
+    if not words:
+        return None
+    return re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b", re.IGNORECASE)
+
+
+def _mentions_domain_keyword(query: str) -> bool:
+    pattern = _domain_keyword_re(get_settings().retrieval_domain_keywords)
+    return bool(pattern and pattern.search(query))
 
 # The model is told (prompt.py SYSTEM_PROMPT, rule 3) to say "I don't have
 # approved information covering that" when the sources don't answer the
@@ -100,6 +152,17 @@ def answer_question(
     history: Optional[list[dict[str, str]]] = None,
     generator: Optional[Any] = None,
 ) -> dict[str, Any]:
+    smalltalk = _smalltalk_reply(query)
+    if smalltalk is not None:
+        return {
+            "query": query,
+            "answer": smalltalk,
+            "grounded": False,
+            "citations": [],
+            "retrieved_count": 0,
+            "smalltalk": True,
+        }
+
     search_query = _retrieval_query(query, history)
     settings = get_settings()
 
@@ -118,8 +181,22 @@ def answer_question(
         applicant_variant=applicant_variant,
         query_embedding=query_embedding,
     )
-    if relevance < settings.retrieval_min_relevance:
-        logger.info(f"declined as out of scope (relevance={relevance:.3f}): {query!r}")
+    on_topic = relevance >= settings.retrieval_min_relevance or _mentions_domain_keyword(query)
+    if not on_topic:
+        # The question text is deliberately not logged: visitors can type
+        # personal details (names, passport numbers) into it.
+        logger.info(f"declined as out of scope (relevance={relevance:.3f}, chars={len(query)})")
+        if not has_approved_content():
+            # Nothing is approved yet, so *every* question scores 0. Saying "this
+            # is outside what I can help with" would be wrong; say it hasn't been
+            # reviewed yet instead.
+            return {
+                "query": query,
+                "answer": NO_CONTEXT_ANSWER,
+                "grounded": False,
+                "citations": [],
+                "retrieved_count": 0,
+            }
         return {
             "query": query,
             "answer": OUT_OF_SCOPE_ANSWER,
@@ -159,6 +236,10 @@ def answer_question(
         # either backend), a generation failure should degrade to an
         # honest message like NO_CONTEXT_ANSWER above, not an unhandled
         # 500 that leaves the widget showing nothing at all.
+        # The detail goes to the log only. It used to be returned to the
+        # browser as `generation_error`, which leaked internals (hostnames,
+        # account names, provider messages); the widget only needs to know that
+        # it happened, so the value is a fixed code.
         logger.warning(f"generation backend failed: {exc}")
         return {
             "query": query,
@@ -166,7 +247,7 @@ def answer_question(
             "grounded": False,
             "citations": [],
             "retrieved_count": len(chunks),
-            "generation_error": str(exc),
+            "generation_error": "generation_unavailable",
         }
     answer = strip_thinking(raw)
 

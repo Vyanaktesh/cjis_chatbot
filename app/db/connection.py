@@ -40,6 +40,12 @@ def _get_pool() -> ThreadedConnectionPool:
                     dsn=settings.postgres_dsn,
                     connect_timeout=settings.postgres_connect_timeout,
                     options=f"-c statement_timeout={int(settings.postgres_statement_timeout_ms)}",
+                    # TCP keepalives so a firewall or load balancer doesn't
+                    # silently drop idle pooled connections.
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=3,
                 )
     return _pool
 
@@ -59,6 +65,25 @@ def _borrow(pool: ThreadedConnectionPool) -> "psycopg2.extensions.connection":
             time.sleep(0.05)
 
 
+def _checkout(pool: ThreadedConnectionPool) -> "psycopg2.extensions.connection":
+    """Borrows a connection that actually works. psycopg2 doesn't notice a
+    connection the server has dropped (database restart, idle timeout) until
+    it is used, so a restart used to cost one failed request per pooled
+    connection. A trivial query up front discards dead ones and tries again."""
+    for _ in range(3):
+        conn = _borrow(pool)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+            conn.rollback()  # end the transaction that SELECT opened
+            return conn
+        except Exception:
+            pool.putconn(conn, close=True)
+    # Still nothing usable: hand out a fresh attempt so the real error (e.g.
+    # the database being down) comes from the caller's own use of it.
+    return _borrow(pool)
+
+
 @contextmanager
 def get_conn():
     """Borrows a pooled psycopg2 connection; commits on success, rolls back
@@ -66,7 +91,7 @@ def get_conn():
     whose rollback fails is treated as broken and closed rather than
     returned, so a poisoned connection can't be handed to the next caller."""
     pool = _get_pool()
-    conn = _borrow(pool)
+    conn = _checkout(pool)
     broken = False
     try:
         yield conn

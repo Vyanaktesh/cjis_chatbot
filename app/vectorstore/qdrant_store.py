@@ -5,6 +5,7 @@ so retrieval-time filtering (service_category, canonical, review_status,
 jurisdiction, ...) works without a second round-trip to Postgres.
 """
 
+from functools import lru_cache
 from typing import Any, Optional
 from uuid import UUID
 
@@ -19,7 +20,12 @@ SPARSE_VECTOR_NAME = "sparse"
 DENSE_DIM = 1024
 
 
+@lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
+    """One shared client per process. It used to build a new client (and a new
+    HTTP connection pool, never closed) on every call -- twice per chat turn --
+    which churns sockets under load. Call get_qdrant_client.cache_clear() if
+    the connection settings ever change at runtime."""
     settings = get_settings()
     return QdrantClient(
         host=settings.qdrant_host,

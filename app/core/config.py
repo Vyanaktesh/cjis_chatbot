@@ -121,6 +121,16 @@ class Settings(BaseSettings):
     # ones slip through, since the gap's exact location will shift as more
     # sources get approved into the chunk set.
     retrieval_min_relevance: float = 0.55
+    # Words that mark a question as on-topic even when its embedding similarity
+    # lands just under retrieval_min_relevance. Very short questions (a bare
+    # "OCI" scored 0.547 against the 0.55 floor) carry little signal for the
+    # embedding model, so an explicit domain-word check backs it up. Comma
+    # separated, matched as whole words/phrases, case-insensitive.
+    retrieval_domain_keywords: str = (
+        "oci,pio,passport,visa,consulate,consular,renunciation,surrender,"
+        "attestation,attest,apostille,vfs,police clearance,pcc,birth certificate,"
+        "death certificate,emergency certificate,miscellaneous,overseas citizen"
+    )
 
     # --- Generation (Phase 7) ---
     # Self-hosted, CPU-only GGUF model via llama.cpp — no third-party API.
@@ -155,6 +165,12 @@ class Settings(BaseSettings):
     # budget goes to the visible answer.
     gemini_max_output_tokens: int = 1024
     gemini_thinking_budget: int = 0
+    # Per-call HTTP timeout. The SDK's default is no timeout at all, so one
+    # stalled Google call would hold a worker thread forever and, with enough
+    # of them, freeze the whole API. gemini_total_budget_seconds bounds a
+    # request including its rate-limit retries.
+    gemini_timeout_seconds: float = 20.0
+    gemini_total_budget_seconds: float = 45.0
 
     # --- HubSpot escalation (Phase 8 follow-up) ---
     # When the chatbot can't ground an answer (see app/generation/service.py's
@@ -186,6 +202,20 @@ class Settings(BaseSettings):
     # unset when a submission comes in.
     hubspot_citizen_pipeline_id: str | None = None
     hubspot_citizen_stage_pending_id: str | None = None
+    # Who can open an uploaded Citizen Corner photo before it is reviewed.
+    # Photos are uploaded the moment they are submitted, long before
+    # moderation, so the default keeps them out of search engines
+    # (PUBLIC_NOT_INDEXABLE). PRIVATE is stricter (portal users only) but the
+    # review team then needs HubSpot's signed links to view them.
+    hubspot_photo_access: str = "PUBLIC_NOT_INDEXABLE"
+
+    # --- API process behaviour ---
+    # Load the embedding model at startup (in the background) so the first
+    # visitor doesn't wait for it. Turn off in tests or constrained setups.
+    warmup_on_startup: bool = True
+    # Reject requests that announce a body larger than this (bytes). Citizen
+    # Corner photos are capped at 8MB; everything else is tiny.
+    max_request_body_bytes: int = 10 * 1024 * 1024
 
     @property
     def postgres_dsn(self) -> str:
@@ -199,3 +229,24 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Settings are cached — env is read once per process."""
     return Settings()
+
+
+def production_config_problems(settings: Settings) -> list[str]:
+    """Unsafe settings that must not reach a real deployment. Empty list when
+    APP_ENV isn't "production" (local dev keeps its convenient defaults) or
+    when everything is acceptable."""
+    if settings.app_env.strip().lower() != "production":
+        return []
+    problems = []
+    if settings.cors_allowed_origins.strip() == "*":
+        problems.append(
+            "CORS_ALLOWED_ORIGINS is '*': any website could call the write endpoints "
+            "from a visitor's browser. Set it to the real site origin(s)."
+        )
+    if settings.postgres_password == "change_me_dev_only":
+        problems.append("POSTGRES_PASSWORD is still the development default.")
+    if not settings.qdrant_api_key and settings.qdrant_host not in ("localhost", "127.0.0.1", "qdrant"):
+        problems.append("QDRANT_API_KEY is empty for a non-local Qdrant host.")
+    if settings.qdrant_api_key and not settings.qdrant_https and settings.qdrant_host not in ("localhost", "127.0.0.1", "qdrant"):
+        problems.append("QDRANT_HTTPS is false, so the Qdrant API key travels in cleartext.")
+    return problems

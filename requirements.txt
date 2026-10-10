@@ -11,7 +11,8 @@ psycopg2-binary==2.9.9
 pydantic==2.13.4
 pydantic-settings==2.6.1
 python-dotenv==1.0.1
-qdrant-client==1.12.1
+# Keep within one minor version of the qdrant/qdrant image tag in docker-compose.yml.
+qdrant-client==1.18.0
 
 # --- Phase 2: fetcher ---
 playwright==1.56.0

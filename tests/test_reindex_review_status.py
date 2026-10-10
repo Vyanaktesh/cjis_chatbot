@@ -142,6 +142,22 @@ def test_reindexing_changed_content_resets_approval_in_both_stores(world):
     assert world.served() == []
 
 
+def test_a_superseded_chunk_cannot_be_approved_again(world):
+    from app.review.service import ChunkNotFound, ChunkNotReviewable
+
+    world.index(world.v1_, ["Fee is $100"])
+    v2 = world.new_version("h2")
+    world.index(v2, ["Fee is $300 (new fee)"])  # supersedes v1's chunk
+    assert ("Fee is $100", "superseded") in world.pg()
+
+    with pytest.raises(ChunkNotReviewable) as excinfo:
+        world.approve(world.v1_, 0)  # a reviewer clicks approve on the OLD chunk
+
+    assert isinstance(excinfo.value, ChunkNotFound)  # callers that only handle "not found" still cope
+    assert ("Fee is $100", "superseded") in world.pg()
+    assert world.served() == []  # the outdated text did not go live again
+
+
 def test_superseded_chunks_stay_superseded_when_reindexed(world):
     world.index(world.v1_, ["Fee is $100"])
     world.approve(world.v1_, 0)
