@@ -152,7 +152,10 @@ class Settings(BaseSettings):
 
     # --- Gemini API (only used when generation_backend == "gemini") ---
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    # gemini-2.5-flash is retired for new API accounts (Google returns 404 and
+    # points to the 3.x line), so default to a current model. Override via
+    # GEMINI_MODEL in .env if your account needs a different one.
+    gemini_model: str = "gemini-3.8-flash"
     # Separate token budget from generation_max_tokens above -- that value
     # (350) was deliberately kept low to bound worst-case *latency* on the
     # CPU-only Qwen path, which doesn't apply to Gemini. Gemini 2.5 Flash is
