@@ -99,21 +99,49 @@ def build_rag_messages(
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_DASH_SPACED_RE = re.compile(r"\s*[—–]\s*")
+_DASH_RE = re.compile(r"\s*[—–]\s*")
+
+_RANGE_WORDS = {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+
+
+def _is_range(left: str, right: str) -> bool:
+    """A dash between two numbers/times/weekdays/months is a RANGE
+    ("10 – 15 days", "$25 – $50", "9 am – 5 pm", "Monday – Friday"), not a
+    clause break. Turning a range into a comma changes the meaning of a fee,
+    a processing time or office hours, so ranges must be handled separately."""
+    left_tokens = left.split()[-2:]
+    right_tokens = right.split()[:2]
+    if any(c.isdigit() for t in left_tokens for c in t) and any(
+        c.isdigit() for t in right_tokens for c in t
+    ):
+        return True
+    left_word = re.sub(r"\W+", "", left_tokens[-1]).lower() if left_tokens else ""
+    right_word = re.sub(r"\W+", "", right_tokens[0]).lower() if right_tokens else ""
+    return left_word in _RANGE_WORDS and right_word in _RANGE_WORDS
 
 
 def _strip_dashes(text: str) -> str:
     """Rule 6a in SYSTEM_PROMPT asks the model not to use em/en dashes, but
     LLMs reach for them out of habit regardless of instruction; this is a
-    deterministic safety net. A dash written with surrounding spaces (the
-    common "clause break" usage, e.g. "word — word") becomes ", "; a bare
-    dash with no spaces (rare, usually a number range like "10–15") becomes
-    "-"."""
+    deterministic safety net. A dash used as a clause break ("word — word")
+    becomes ", ". A dash used as a RANGE keeps its meaning: with spaces it
+    becomes " to " ("10 – 15 days" -> "10 to 15 days"), without spaces a plain
+    hyphen ("5–10" -> "5-10")."""
 
     def replace(match: "re.Match[str]") -> str:
-        return ", " if len(match.group(0)) > 1 else "-"
+        left = match.string[: match.start()]
+        right = match.string[match.end():]
+        if _is_range(left, right):
+            return " to " if len(match.group(0)) > 1 else "-"
+        return ", "
 
-    return _DASH_SPACED_RE.sub(replace, text)
+    return _DASH_RE.sub(replace, text)
 
 
 def strip_thinking(raw_text: str) -> str:

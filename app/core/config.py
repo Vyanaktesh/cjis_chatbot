@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     rate_limit_generate: str = "20/minute"
     rate_limit_search: str = "60/minute"
     rate_limit_submit: str = "5/minute"
+    # Where the rate-limit counters live. "memory://" is per-process; use a
+    # shared store such as "redis://host:6379" when running multiple workers
+    # (needs the `redis` package installed).
+    rate_limit_storage_uri: str = "memory://"
 
     # --- PostgreSQL ---
     postgres_host: str = "localhost"

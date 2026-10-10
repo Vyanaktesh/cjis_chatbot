@@ -24,13 +24,21 @@ from typing import Any
 from app.chunking.chunker import chunk_blocks
 from app.chunking.tag_metadata import build_chunk_records
 from app.db.audit_repo import log_event
-from app.db.chunks_repo import list_by_source_excluding_version, mark_superseded, upsert_chunk
+from app.db.chunks_repo import (
+    get_review_state,
+    list_by_source_excluding_version,
+    mark_superseded,
+    upsert_chunk,
+)
 from app.db.source_versions_repo import SourceVersion
+from app.core.logging_config import get_logger
 from app.db.sources_repo import Source
 from app.embedding.bge_m3 import MODEL_NAME, BgeM3Embedder
 from app.extraction.html_extractor import extract_html
 from app.extraction.pdf_extractor import extract_pdf
 from app.vectorstore.qdrant_store import build_point, ensure_collection, set_payload_fields, upsert_points
+
+logger = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -51,7 +59,34 @@ def extract_and_chunk(source: Source, version: SourceVersion) -> list[dict[str, 
     raw_bytes = raw_path.read_bytes()
     blocks = extract_pdf(raw_bytes) if source.source_type == "pdf" else extract_html(raw_bytes)
     chunks = chunk_blocks(blocks)
+    if not chunks:
+        # A source that "fetched fine" but yields nothing is invisible to the
+        # chatbot -- surface it instead of letting it pass silently.
+        logger.warning(
+            f"extraction produced ZERO chunks for source {source.title or source.url!r} "
+            f"(version {version.version}); the page may be script-rendered or its markup unsupported"
+        )
     return build_chunk_records(chunks, source, version)
+
+
+def resolve_review_status(existing: dict[str, Any] | None, new_content_hash: str) -> str:
+    """The review status a chunk should have after (re-)indexing.
+
+    Re-indexing the same (source_version, chunk_index) must not silently
+    change what a reviewer decided:
+      - new chunk                      -> pending_review
+      - same text as before            -> keep its status (approved stays approved)
+      - text changed since it was reviewed -> pending_review (needs a fresh look)
+      - superseded                     -> stays superseded
+    """
+    if existing is None:
+        return "pending_review"
+    status = existing["review_status"]
+    if status == "superseded":
+        return status
+    if existing["content_hash"] != new_content_hash:
+        return "pending_review"
+    return status
 
 
 def to_qdrant_payload(record: dict[str, Any]) -> dict[str, Any]:
@@ -117,12 +152,35 @@ def index_records(
             f"records/embeddings length mismatch: {len(records)} records vs "
             f"{len(embeddings)} embeddings -- refusing to index a partial set"
         )
+    # Decide each chunk's review status from what is already stored, so the
+    # same value goes to BOTH Postgres and the Qdrant payload below. (Before
+    # this, Postgres kept an existing status on re-index while the Qdrant
+    # upsert overwrote it with "pending_review" -- approved chunks silently
+    # vanished from retrieval while the admin view still showed them approved.)
+    existing = get_review_state(conn, [record["id"] for record in records])
+    reset_ids = []
+    for record in records:
+        prior = existing.get(str(record["id"]))
+        status = resolve_review_status(prior, record["content_hash"])
+        if prior and prior["review_status"] in ("approved", "rejected") and status == "pending_review":
+            reset_ids.append(str(record["id"]))
+        record["review_status"] = status
+
     for record in records:
         db_record = dict(record)
         db_record["embedding_model"] = MODEL_NAME
         db_record["qdrant_point_id"] = record["id"]
         db_record["used_ocr"] = record["_used_ocr"]
         upsert_chunk(conn, db_record)
+
+    if reset_ids:
+        log_event(
+            conn,
+            entity_type="source_version",
+            entity_id=version.id,
+            action="review_reset_content_changed",
+            details={"source_id": str(source.id), "version": version.version, "chunk_ids": reset_ids},
+        )
 
     log_event(
         conn,

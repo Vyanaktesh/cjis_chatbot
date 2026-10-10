@@ -194,3 +194,47 @@ detail on each one if needed.
   automatically with backoff, but if you're hammering it in quick
   succession you can still exhaust the daily quota. Switching back to
   `GENERATION_BACKEND=qwen` reverts to fully local at any time.
+
+## Running behind a reverse proxy / load balancer
+
+Rate limiting is per client IP. Behind nginx, a cloud load balancer or a CDN,
+the server only sees the proxy's address, so **every visitor shares one limit**
+(for example 20 chat messages per minute for the whole site) unless uvicorn is
+told which proxies to trust:
+
+```bash
+uvicorn app.api.main:app --host 0.0.0.0 --port 8000 \
+  --proxy-headers --forwarded-allow-ips="10.0.0.5,10.0.0.6"
+```
+
+- List only your proxy's real address(es) in `--forwarded-allow-ips` (or set
+  the `FORWARDED_ALLOW_IPS` environment variable). **Never use `"*"` on a
+  public service** — it lets any visitor forge `X-Forwarded-For` and dodge the
+  limit.
+- The proxy must set/append `X-Forwarded-For` itself.
+- With more than one worker, point `RATE_LIMIT_STORAGE_URI` at a shared store
+  (for example `redis://redis:6379`, which also needs `pip install redis`).
+  The default `memory://` counts per worker, so N workers allow N times the
+  limit.
+
+## Running the tests
+
+```bash
+# Backend (from the repo root)
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+`tests/test_reindex_review_status.py` needs a reachable Postgres (the one from
+`docker compose up -d` works). It creates and drops its own throwaway database,
+and is skipped automatically if Postgres isn't reachable, so it never touches
+your real data. Everything else runs without any services.
+
+```bash
+# Frontend
+cd frontend
+npm install
+npm test        # unit tests
+npm run build   # type-check + production build
+npm run lint
+```
