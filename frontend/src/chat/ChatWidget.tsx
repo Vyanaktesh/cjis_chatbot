@@ -21,6 +21,7 @@ import {
 import type { ChatResponse } from "./backendAdapter";
 import { playSend } from "./sound";
 import { safeUrl } from "./safeUrl";
+import { MicButton } from "./MicButton";
 import { SupportTicketForm } from "./SupportTicketForm";
 import { CitizenCornerForm } from "./CitizenCornerForm";
 
@@ -474,6 +475,7 @@ function Composer() {
         }}
         className="consulate-scroll max-h-28 flex-1 resize-none rounded-2xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-4 py-2.5 text-[14.5px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]"
       />
+      <MicButton />
       <ComposerPrimitive.Send asChild>
         <button
           type="submit"
