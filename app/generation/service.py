@@ -8,6 +8,7 @@ decline on its own, which is a weaker guarantee than just not generating
 at all when there's genuinely nothing approved to answer from.
 """
 
+import re
 from typing import Any, Optional
 
 from app.core.config import get_settings
@@ -18,6 +19,15 @@ from app.retrieval.retriever import probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
 logger = get_logger(__name__)
+
+# The model is told (prompt.py SYSTEM_PROMPT, rule 3) to say "I don't have
+# approved information covering that" when the sources don't answer the
+# question. Matching that phrase lets the backend treat such a reply as a
+# decline rather than an answer.
+_DECLINE_RE = re.compile(
+    r"\b(?:do not|don['’]t|dont) have (?:any )?approved information\b",
+    re.IGNORECASE,
+)
 
 GENERATION_UNAVAILABLE_ANSWER = (
     "Sorry, the service is temporarily down. Please wait a moment and try "
@@ -175,10 +185,22 @@ def answer_question(
                 }
             )
 
+    # "grounded" means the answer is backed by sources it actually cites. The
+    # widget uses it to decide whether to offer the "raise a query with the
+    # consulate" form, so it must be False when the model itself says it has no
+    # approved information (SYSTEM_PROMPT rule 3), when it cites nothing, or when
+    # it returns nothing at all. Previously this was always True once the
+    # model produced any text, so a model-written "I don't have approved
+    # information" reply never offered the escalation.
+    declined = _DECLINE_RE.search(answer) is not None
+    grounded = bool(citations) and not declined
+    if declined:
+        citations = []  # no source chips under an answer that says nothing was found
+
     return {
         "query": query,
         "answer": answer,
-        "grounded": True,
+        "grounded": grounded,
         "citations": citations,
         "retrieved_count": len(chunks),
         "uncited_sources_retrieved": len(chunks) - len(citations),

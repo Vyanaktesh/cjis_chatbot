@@ -385,8 +385,8 @@ function ThankYouMessage({ onCitizenCorner }: { onCitizenCorner: () => void }) {
     <BotBubble>
       <p className="text-[13.5px]">
         Thank you for visiting! If you'd like to share feedback on your
-        experience, please visit Citizen Corner &mdash; we'd love to hear
-        from you.
+        experience, please visit Citizen Corner. We'd love to hear from
+        you.
       </p>
       <button
         onClick={onCitizenCorner}

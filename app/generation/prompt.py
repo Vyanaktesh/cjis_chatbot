@@ -23,6 +23,7 @@ Rules, no exceptions:
 5. Never invent a source number that wasn't given to you.
 6. Be concise and direct. This is a practical service-information lookup, not an essay.
 6a. Never use an em dash (—) or en dash (–) in your response. Use a period, comma, or regular hyphen instead.
+6b. Write plain text only. Do not use markdown formatting: no asterisks or underscores for bold or italics, no # headings, no backticks. For steps, write numbered lines such as "1." followed by plain words, and for lists use a plain hyphen at the start of the line.
 7. Earlier turns in this conversation (if any) may be shown to you before the current message — use them ONLY to understand what the user is referring to (e.g. resolving "what about for a child" after an OCI question). Their citation numbers were relative to that earlier turn's own source list and do NOT apply now. Every claim in your new answer must still be justified by, and cited to, the numbered sources in the CURRENT message only."""
 
 
@@ -144,13 +145,42 @@ def _strip_dashes(text: str) -> str:
     return _DASH_RE.sub(replace, text)
 
 
+_MD_BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MD_ITALIC_RE = re.compile(r"(?<![\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])")
+_MD_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_MD_BULLET_RE = re.compile(r"^([ \t]*)[*+][ \t]+", re.MULTILINE)
+_MD_CODE_RE = re.compile(r"`+([^`\n]+)`+")
+_MD_LINK_RE = re.compile(r"\[([^\]\d][^\]]*)\]\((https?://[^)\s]+)\)")
+_MD_NUMBERED_RE = re.compile(r"^([ \t]*\d+[.)])[ \t]{2,}", re.MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    """The chat widget shows answers as plain text, so markdown the model
+    reaches for out of habit (**bold**, "* " bullets, # headings, `code`,
+    "1.  " with extra spaces) would appear as literal symbols. The
+    SYSTEM_PROMPT asks for plain text, but models don't reliably follow that,
+    so this is the deterministic safety net: emphasis markers are dropped,
+    bullets become "- ", headings lose their "#", links become "text (url)".
+    Citation markers like [1] are left untouched."""
+    text = _MD_LINK_RE.sub(r"\1 (\2)", text)
+    text = _MD_BOLD_RE.sub(r"\2", text)
+    text = _MD_CODE_RE.sub(r"\1", text)
+    text = _MD_HEADING_RE.sub("", text)
+    text = _MD_BULLET_RE.sub(r"\1- ", text)
+    text = _MD_ITALIC_RE.sub(r"\1", text)
+    text = _MD_NUMBERED_RE.sub(r"\1 ", text)
+    return text
+
+
 def strip_thinking(raw_text: str) -> str:
     """Qwen3 wraps chain-of-thought in <think>...</think>; /no_think should
     make this an empty block, but strip it defensively either way rather
     than assume the suffix always works across model/runtime versions.
-    Also normalizes away em/en dashes (see _strip_dashes) since the model
-    doesn't reliably follow the SYSTEM_PROMPT instruction against them."""
-    return _strip_dashes(_THINK_BLOCK_RE.sub("", raw_text).strip())
+    Also normalizes away em/en dashes (see _strip_dashes) and markdown
+    symbols (see _strip_markdown) since models don't reliably follow the
+    SYSTEM_PROMPT instructions against them."""
+    cleaned = _THINK_BLOCK_RE.sub("", raw_text).strip()
+    return _strip_dashes(_strip_markdown(cleaned))
 
 
 def extract_cited_indices(answer_text: str) -> list[int]:

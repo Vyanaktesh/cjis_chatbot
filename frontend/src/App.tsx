@@ -25,9 +25,6 @@ function DemoPage() {
               <p className="text-sm font-semibold text-[var(--cc-text)]">
                 Consulate General of India
               </p>
-              <p className="text-xs text-[var(--cc-text-soft)]">
-                Demo site — Phase 8
-              </p>
             </div>
           </div>
           <nav className="hidden gap-6 text-sm text-[var(--cc-text-soft)] sm:flex">
@@ -43,12 +40,6 @@ function DemoPage() {
         <h1 className="text-3xl font-semibold text-[var(--cc-text)]">
           Consular services
         </h1>
-        <p className="mt-3 max-w-2xl text-[var(--cc-text-soft)]">
-          This placeholder page stands in for the real consulate site. The
-          chat widget in the bottom-right corner is the actual Phase 8
-          deliverable — it talks to the FastAPI backend built in Phases
-          1-7 (hybrid retrieval + grounded, self-hosted Qwen3 generation).
-        </p>
       </main>
     </div>
   );
