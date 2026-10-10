@@ -66,7 +66,7 @@ export function LoginScreen({
             autoFocus
             maxLength={500}
             autoComplete="current-password"
-            className="w-full rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-3 py-2 text-[14px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]"
+            className="w-full rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-3 py-2 text-base sm:text-[14px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]"
           />
         </label>
 

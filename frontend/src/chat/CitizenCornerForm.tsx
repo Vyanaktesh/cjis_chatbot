@@ -35,7 +35,7 @@ const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 const inputClass =
-  "w-full rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-3 py-2 text-[13.5px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]";
+  "w-full rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-3 py-2 text-base sm:text-[13.5px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]";
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (

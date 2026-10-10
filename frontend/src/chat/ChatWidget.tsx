@@ -14,7 +14,6 @@ import {
   Minimize2,
   Moon,
   Send,
-  Smile,
   Sun,
   X,
 } from "lucide-react";
@@ -22,6 +21,7 @@ import type { ChatResponse } from "./backendAdapter";
 import { playSend } from "./sound";
 import { safeUrl } from "./safeUrl";
 import { MicButton } from "./MicButton";
+import consulateLogo from "../assets/consulate-logo.jpg";
 import { SupportTicketForm } from "./SupportTicketForm";
 import { CitizenCornerForm } from "./CitizenCornerForm";
 
@@ -80,13 +80,13 @@ function BotAvatar({
   size?: number;
   withStatus?: boolean;
 }) {
-  const iconSize = Math.round(size * 0.55);
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <div className="flex h-full w-full items-center justify-center rounded-full bg-gradient-to-br from-[var(--brand-blue)] to-[var(--brand-blue-dark)] shadow-sm ring-2 ring-white/70">
-        <Smile
-          style={{ width: iconSize, height: iconSize }}
-          className="text-white"
+      <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-white shadow-sm ring-2 ring-white/70">
+        <img
+          src={consulateLogo}
+          alt="Consulate General of India, Atlanta"
+          className="h-full w-full object-contain p-0.5"
         />
       </div>
       {withStatus && (
@@ -464,7 +464,7 @@ function QuickActionsBar({ onCitizenCorner }: { onCitizenCorner: () => void }) {
 
 function Composer() {
   return (
-    <ComposerPrimitive.Root className="flex items-end gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface)] p-3">
+    <ComposerPrimitive.Root className="flex items-end gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface)] px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-3">
       <ComposerPrimitive.Input
         placeholder="Ask me anything..."
         aria-label="Your message"
@@ -473,7 +473,7 @@ function Composer() {
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) playSend();
         }}
-        className="consulate-scroll max-h-28 flex-1 resize-none rounded-2xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-4 py-2.5 text-[14.5px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]"
+        className="consulate-scroll max-h-28 flex-1 resize-none rounded-2xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-4 py-2.5 text-base text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)] sm:text-[14.5px]"
       />
       <MicButton />
       <ComposerPrimitive.Send asChild>
@@ -568,10 +568,10 @@ function ChatPanel({
 
   return (
     <div
-      className={`consulate-panel-enter flex max-w-[92vw] flex-col overflow-hidden rounded-2xl border border-[var(--cc-border)] bg-[var(--cc-surface)] shadow-[var(--cc-shadow)] transition-all duration-200 ease-out ${
+      className={`consulate-panel-enter flex flex-col overflow-hidden bg-[var(--cc-surface)] shadow-[var(--cc-shadow)] transition-all duration-200 ease-out fixed inset-0 z-50 h-[100dvh] w-screen rounded-none border-0 sm:static sm:z-auto sm:max-w-[92vw] sm:rounded-2xl sm:border sm:border-[var(--cc-border)] ${
         expanded
-          ? "h-[720px] max-h-[88vh] w-[440px]"
-          : "h-[600px] max-h-[80vh] w-[380px]"
+          ? "sm:h-[720px] sm:max-h-[88vh] sm:w-[440px]"
+          : "sm:h-[600px] sm:max-h-[80vh] sm:w-[380px]"
       }`}
     >
       {/* Header */}
@@ -608,7 +608,7 @@ function ChatPanel({
           <button
             onClick={() => setExpanded((e) => !e)}
             aria-label={expanded ? "Shrink chat" : "Enlarge chat"}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+            className="hidden h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/15 hover:text-white sm:flex"
           >
             {expanded ? (
               <Minimize2 className="h-4 w-4" />
@@ -719,9 +719,13 @@ export function ChatWidget({
           aria-label="Chat with DOST"
           className="consulate-float group flex items-center gap-2.5 rounded-full bg-gradient-to-br from-[var(--brand-blue)] to-[var(--brand-blue-dark)] py-2 pl-2 pr-4 text-white shadow-[var(--cc-shadow)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
         >
-          <span className="relative flex h-10 w-10 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/25">
+          <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-white ring-1 ring-white/25">
             <span className="absolute inset-0 rounded-full bg-white/20 opacity-40 animate-ping" />
-            <Smile className="relative h-5 w-5" />
+            <img
+              src={consulateLogo}
+              alt=""
+              className="relative h-8 w-8 object-contain"
+            />
           </span>
           <span className="flex flex-col items-start leading-tight">
             <span className="text-[13px] font-semibold">Chat with DOST</span>

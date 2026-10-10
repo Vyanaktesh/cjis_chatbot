@@ -8,6 +8,7 @@ import {
 } from "./chat/backendAdapter";
 import { ChatWidget } from "./chat/ChatWidget";
 import { LoginScreen } from "./chat/LoginScreen";
+import consulateLogo from "./assets/consulate-logo.jpg";
 
 /**
  * Demo host page: a minimal placeholder standing in for the real consulate
@@ -22,10 +23,17 @@ function DemoPage() {
       <header className="border-b border-[var(--cc-border)] bg-[var(--cc-surface)]">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-full bg-[var(--brand-blue)]" />
-            <div>
+            <img
+              src={consulateLogo}
+              alt="Consulate General of India, Atlanta"
+              className="h-10 w-10 shrink-0 rounded-full object-contain"
+            />
+            <div className="leading-tight">
               <p className="text-sm font-semibold text-[var(--cc-text)]">
                 Consulate General of India
+              </p>
+              <p className="text-[11.5px] font-medium tracking-wide text-[var(--cc-text-soft)]">
+                Atlanta
               </p>
             </div>
           </div>
