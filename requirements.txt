@@ -42,6 +42,17 @@ FlagEmbedding==1.4.0
 # pin tried first. Re-verify both paths before bumping this.
 transformers==4.57.6
 
+# --- Speech-to-text (self-hosted whisper.cpp) ---
+# whisper.cpp's own Python bindings; compiles a small C++ extension at install
+# time (needs cmake + a C++ compiler -- both are in Dockerfile.backend). The
+# ggml model is downloaded on first use. Runs entirely locally, no cloud STT.
+pywhispercpp==1.5.1
+
+# --- Login gate (shared-password session cookie) ---
+# Signs the session cookie so the server can verify it without any session
+# store (see app/api/auth.py). Pure-Python, no build step.
+itsdangerous==2.2.0
+
 # --- Phase 5: admin review API ---
 fastapi==0.115.5
 uvicorn[standard]==0.32.1

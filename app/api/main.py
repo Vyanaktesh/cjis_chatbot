@@ -35,14 +35,18 @@ PII storage beyond the session" true by construction rather than by a
 retention policy anyone has to trust.
 """
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -52,6 +56,8 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
 
+from app.api import auth
+from app.api.auth import require_login
 from app.core.config import get_settings, production_config_problems
 from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
@@ -187,12 +193,55 @@ _cors_origins = (
     if settings.cors_allowed_origins.strip() == "*"
     else [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
 )
+# allow_credentials=True so the browser sends/accepts the session cookie
+# (see app/api/auth.py). In production the frontend and API are served from
+# the SAME origin via nginx (see frontend/nginx.conf), so CORS does not even
+# apply there; this matters for cross-origin local dev. Starlette echoes the
+# specific request origin (not "*") on credentialed requests even when
+# _cors_origins is ["*"], which is what makes the cookie work in that case.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+# --- Login gate (shared password; see app/api/auth.py) --------------------
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/auth/login")
+@limiter.limit(settings.rate_limit_submit)
+def auth_login(request: Request, body: LoginRequest):
+    """Exchange the shared password for a signed session cookie. When the gate
+    is disabled (no LOGIN_PASSWORD) any login is accepted and a cookie is still
+    set, so the frontend's flow works identically either way."""
+    if auth.login_required(settings) and not auth.password_matches(body.password, settings):
+        raise HTTPException(status_code=401, detail="Incorrect password.")
+    response = JSONResponse({"authenticated": True})
+    auth.issue_session_cookie(response, settings)
+    return response
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    """Reports whether a password is required at all, and whether this browser
+    is currently authenticated. The frontend calls this on load to decide
+    between the login screen and the chat widget."""
+    return {
+        "login_required": auth.login_required(settings),
+        "authenticated": auth.is_authenticated(request, settings),
+    }
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    response = JSONResponse({"authenticated": False})
+    auth.clear_session_cookie(response, settings)
+    return response
 
 @app.get("/health")
 def health():
@@ -223,6 +272,7 @@ def health():
 def search(
     request: Request,
     q: str = Query(..., min_length=1, max_length=500),
+    _auth: None = Depends(require_login),
     limit: int = 8,
     service_category: Optional[str] = Query(None, max_length=100),
     canonical: Optional[bool] = None,
@@ -294,7 +344,7 @@ class GenerateRequest(BaseModel):
 
 @app.post("/generate")
 @limiter.limit(settings.rate_limit_generate)
-def generate(request: Request, body: GenerateRequest):
+def generate(request: Request, body: GenerateRequest, _auth: None = Depends(require_login)):
     """
     Phase 7: retrieval (approved-only) + a grounded Qwen3 answer with
     bracket citations back to the retrieved chunks. If retrieval finds
@@ -346,7 +396,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 @limiter.limit(settings.rate_limit_generate)
-def chat(request: Request, body: ChatRequest):
+def chat(request: Request, body: ChatRequest, _auth: None = Depends(require_login)):
     """
     Phase 8: frontend-facing chat endpoint. Thin wrapper over the same
     answer_question() pipeline as /generate, shaped for the React widget:
@@ -422,7 +472,7 @@ class SupportTicketResponse(BaseModel):
 
 @app.post("/support/ticket", response_model=SupportTicketResponse)
 @limiter.limit(settings.rate_limit_submit)
-def create_support_ticket(request: Request, body: SupportTicketRequest):
+def create_support_ticket(request: Request, body: SupportTicketRequest, _auth: None = Depends(require_login)):
     """
     Escalation path for when the chatbot can't ground an answer (see
     app/generation/service.py's OUT_OF_SCOPE_ANSWER / NO_CONTEXT_ANSWER /
@@ -471,6 +521,7 @@ async def submit_citizen_corner(
     submission_type: str = Form(..., max_length=30),
     anonymous: bool = Form(False),
     photo: Optional[UploadFile] = File(None),
+    _auth: None = Depends(require_login),
 ):
     """
     A citizen may share a testimonial, feedback, or photo at any point,
@@ -546,3 +597,76 @@ async def submit_citizen_corner(
             detail="Could not submit your feedback right now. Please try again in a moment.",
         ) from exc
     return {"ticket_id": ticket_id}
+
+
+# --- Speech-to-text (self-hosted whisper.cpp; see
+#     app/transcription/whisper_backend.py) --------------------------------
+_ALLOWED_AUDIO_CONTENT_TYPES = {
+    "audio/webm", "audio/ogg", "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a",
+}
+
+
+class TranscribeResponse(BaseModel):
+    text: str
+
+
+def _convert_and_transcribe(raw: bytes) -> str:
+    """Convert the uploaded audio to 16 kHz mono WAV with ffmpeg, then run
+    whisper.cpp on it. Blocking (ffmpeg subprocess + CPU transcription), so the
+    caller runs it in a worker thread. Everything lives in a temp dir that is
+    always removed."""
+    from app.transcription.whisper_backend import WhisperTranscriber
+
+    workdir = tempfile.mkdtemp(prefix="stt_")
+    try:
+        src = os.path.join(workdir, "input")
+        wav = os.path.join(workdir, "audio16k.wav")
+        with open(src, "wb") as f:
+            f.write(raw)
+        # -nostdin: never block waiting on stdin. Fixed 16 kHz mono PCM WAV is
+        # exactly what whisper.cpp expects. ffmpeg auto-detects the input
+        # container (webm/opus, ogg, mp4, ...), so we don't trust the
+        # browser-declared type.
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-i", src, "-ar", "16000", "-ac", "1", "-f", "wav", wav],
+            capture_output=True,
+            timeout=60,
+        )
+        if proc.returncode != 0 or not os.path.exists(wav):
+            logger.warning(f"ffmpeg conversion failed (rc={proc.returncode}): {proc.stderr[-500:]!r}")
+            raise HTTPException(status_code=422, detail="Could not read that audio. Please try recording again.")
+        return WhisperTranscriber().transcribe_wav(wav)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+@limiter.limit(settings.rate_limit_transcribe)
+async def transcribe(
+    request: Request,
+    audio: UploadFile = File(...),
+    _auth: None = Depends(require_login),
+):
+    """Self-hosted speech-to-text: accepts a short browser audio recording
+    (MediaRecorder webm/opus by default) and returns the transcribed text for
+    the user to review before sending. Nothing is sent to any cloud STT
+    service -- see app/transcription/whisper_backend.py."""
+    if audio.content_type and audio.content_type not in _ALLOWED_AUDIO_CONTENT_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported audio format.")
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=422, detail="The recording was empty.")
+    if len(raw) > settings.max_audio_bytes:
+        raise HTTPException(status_code=413, detail="That recording is too large.")
+    try:
+        text = await run_in_threadpool(_convert_and_transcribe, raw)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- logged, degraded to a clean error
+        logger.exception("transcription failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Speech-to-text is unavailable right now. Please type your message instead.",
+        ) from exc
+    return {"text": text}

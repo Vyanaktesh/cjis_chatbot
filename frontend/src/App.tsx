@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import {
   createBackendAdapter,
+  fetchAuthStatus,
   resetSession,
   type ChatResponse,
 } from "./chat/backendAdapter";
 import { ChatWidget } from "./chat/ChatWidget";
+import { LoginScreen } from "./chat/LoginScreen";
 
 /**
  * Demo host page: a minimal placeholder standing in for the real consulate
@@ -73,6 +75,28 @@ function ChatRuntime({ onClosed }: { onClosed: () => void }) {
 
 export default function App() {
   const [resetKey, setResetKey] = useState(0);
+  // null = still checking /auth/me; false = password needed, not signed in;
+  // true = authenticated (or the gate is off entirely).
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetchAuthStatus().then((status) => {
+      if (active) setAuthed(!status.login_required || status.authenticated);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (authed === null) {
+    // Brief blank state while the auth check is in flight.
+    return <div className="min-h-screen bg-[var(--cc-bg)]" />;
+  }
+
+  if (!authed) {
+    return <LoginScreen onAuthenticated={() => setAuthed(true)} />;
+  }
 
   return (
     <>

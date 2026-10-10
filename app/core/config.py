@@ -209,6 +209,37 @@ class Settings(BaseSettings):
     # review team then needs HubSpot's signed links to view them.
     hubspot_photo_access: str = "PUBLIC_NOT_INDEXABLE"
 
+    # --- Login gate (shared-password access control) ---
+    # A single shared password protecting the public API, NOT a user-account
+    # system. When LOGIN_PASSWORD is empty (the default), the gate is a no-op
+    # so local dev keeps working with zero setup. Set it for the demo/customer
+    # deployment. SESSION_SECRET signs the session cookie (itsdangerous); its
+    # default is a throwaway so cookies survive a single process only --
+    # BOTH of these MUST be set to real values before any real deployment.
+    login_password: str | None = None
+    session_secret: str = "dev-only-insecure-session-secret-change-me"
+    session_cookie_name: str = "cjis_session"
+    session_ttl_seconds: int = 7 * 24 * 3600  # 7 days
+    # Set True once the site is served over HTTPS so the cookie is only ever
+    # sent over TLS. Left False by default so the cookie also works over plain
+    # HTTP during an initial IP-only demo; flip it on for the real domain.
+    session_cookie_secure: bool = False
+
+    # --- Speech-to-text (self-hosted whisper.cpp via pywhispercpp) ---
+    # Model size downloaded/loaded on first use. "base.en" is a good
+    # accuracy/speed balance on CPU; "tiny.en" is lighter for constrained
+    # hosts. English-only ".en" variants are smaller and faster than the
+    # multilingual ones.
+    whisper_model_size: str = "base.en"
+    # Per-IP limit for the transcription endpoint and the largest audio upload
+    # accepted (bytes). A few seconds of webm/opus is tiny; 15MB is generous.
+    rate_limit_transcribe: str = "20/minute"
+    max_audio_bytes: int = 15 * 1024 * 1024
+
+    # --- Containerized frontend ---
+    # Host port the nginx-served frontend listens on (docker-compose).
+    frontend_port: int = 80
+
     # --- API process behaviour ---
     # Load the embedding model at startup (in the background) so the first
     # visitor doesn't wait for it. Turn off in tests or constrained setups.
@@ -249,4 +280,8 @@ def production_config_problems(settings: Settings) -> list[str]:
         problems.append("QDRANT_API_KEY is empty for a non-local Qdrant host.")
     if settings.qdrant_api_key and not settings.qdrant_https and settings.qdrant_host not in ("localhost", "127.0.0.1", "qdrant"):
         problems.append("QDRANT_HTTPS is false, so the Qdrant API key travels in cleartext.")
+    if not settings.login_password:
+        problems.append("LOGIN_PASSWORD is empty, so the public API has no access control.")
+    if settings.session_secret == "dev-only-insecure-session-secret-change-me":
+        problems.append("SESSION_SECRET is still the development default; set a long random value.")
     return problems
