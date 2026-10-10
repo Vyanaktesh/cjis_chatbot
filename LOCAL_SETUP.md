@@ -195,6 +195,48 @@ detail on each one if needed.
   succession you can still exhaust the daily quota. Switching back to
   `GENERATION_BACKEND=qwen` reverts to fully local at any time.
 
+## Full-stack Docker deployment (demo / AWS Lightsail)
+
+The whole app runs as four containers (Postgres, Qdrant, the FastAPI backend,
+and an nginx-served frontend). The frontend reverse-proxies the API, so the
+browser talks to ONE origin -- which keeps the login cookie and CORS simple.
+
+```bash
+cp .env.example .env          # then edit it (see below)
+docker compose build          # backend build is slow: it compiles whisper.cpp
+                              # and bakes the embedding + STT models into the image
+docker compose up -d          # brings up all four services
+# open http://localhost:${FRONTEND_PORT:-80}
+```
+
+Before a real deployment, set in `.env`:
+
+- `LOGIN_PASSWORD` — the shared access password. Leave it empty and the whole
+  app is open (fine for local dev only). When set, visitors see a login screen
+  and every API route except `/health` requires the session cookie.
+- `SESSION_SECRET` — a long random string that signs the session cookie.
+- `POSTGRES_PASSWORD` — not the dev default.
+- `CORS_ALLOWED_ORIGINS` — the real site origin (not `*`).
+- `SESSION_COOKIE_SECURE=true` once served over HTTPS.
+- `APP_ENV=production` — makes the backend refuse to start if any of the above
+  are still unsafe.
+
+Voice input (the mic button) uses self-hosted whisper.cpp via `/transcribe`;
+nothing is sent to a cloud speech service. `WHISPER_MODEL_SIZE` picks the model
+(`base.en` default, `tiny.en` lighter).
+
+To seed demo content without the separate kb_admin review service:
+
+```bash
+docker compose exec backend python scripts/bulk_approve_demo.py
+```
+
+That approves ALL pending chunks (a demo shortcut, not real editorial review).
+
+On the Lightsail instance, open only ports 80/443 in Lightsail's firewall. The
+Postgres/Qdrant host-port bindings in `docker-compose.yml` are bound to
+`127.0.0.1` for local-dev convenience and must not be internet-reachable.
+
 ## Running behind a reverse proxy / load balancer
 
 Rate limiting is per client IP. Behind nginx, a cloud load balancer or a CDN,
