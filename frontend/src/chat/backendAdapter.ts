@@ -134,6 +134,11 @@ export type ChatResponse = {
   // outage ("try again") apart from a genuine can't-answer (offer to
   // escalate to the consulate) -- both are un-grounded otherwise.
   generation_error?: string;
+  // Set for greetings/thanks (smalltalk) and for guardrail responses
+  // (prompt-injection / crisis). Both are ungrounded but should NOT offer
+  // human escalation -- there's nothing for the consulate to follow up on.
+  smalltalk?: boolean;
+  guardrail?: string;
 };
 
 /**

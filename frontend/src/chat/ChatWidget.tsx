@@ -119,6 +119,27 @@ const CATEGORY_STYLES: Record<string, string> = {
 };
 const DEFAULT_CATEGORY_STYLE = "bg-[var(--cc-surface-2)] text-[var(--cc-text-soft)]";
 
+/** A readable label for a source link: the document/page name from the URL
+ * path (e.g. the PDF filename), not just the hostname -- several citations can
+ * share one domain (services.vfsglobal.com) but be different documents, and a
+ * bare hostname makes them all look identical. */
+function sourceLabel(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    const segments = u.pathname.split("/").filter(Boolean);
+    const last = segments[segments.length - 1];
+    if (!last) return host;
+    const name = decodeURIComponent(last)
+      .replace(/\.(pdf|html?|aspx?|php)$/i, "")
+      .replace(/[-_]+/g, " ")
+      .trim();
+    return name || host;
+  } catch {
+    return url;
+  }
+}
+
 function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
   const url = safeUrl(rawUrl);
   if (!url) return null;
@@ -127,12 +148,7 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
   const index = match?.[1];
   const category = match?.[2];
 
-  let host = url;
-  try {
-    host = new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    // keep raw url as fallback label
-  }
+  const label = sourceLabel(url);
 
   return (
     <a
@@ -140,7 +156,7 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
       target="_blank"
       rel="noreferrer"
       className="group flex max-w-full items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:border-[var(--cc-accent)]"
-      title={`${category ? `${category} · ` : ""}${host}`}
+      title={`${category ? `${category} · ` : ""}${url}`}
     >
       {index && (
         <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--cc-accent)] text-[10px] font-semibold text-[var(--cc-accent-ink)]">
@@ -157,7 +173,7 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
         </span>
       )}
       <span className="min-w-0 flex-1 truncate font-medium text-[var(--cc-text)] group-hover:text-[var(--cc-accent-text)]">
-        {host}
+        {label}
       </span>
       <ExternalLink className="ml-auto h-3 w-3 shrink-0 text-[var(--cc-text-faint)] group-hover:text-[var(--cc-accent-text)]" />
     </a>
@@ -555,6 +571,8 @@ function ChatPanel({
         setFlow("resolution");
       } else if (lastResult.generation_error) {
         setFlow("idle"); // service down -> just the "try again" message
+      } else if (lastResult.smalltalk || lastResult.guardrail) {
+        setFlow("idle"); // greeting / injection / crisis -> no escalation offer
       } else {
         setFlow("offer");
       }

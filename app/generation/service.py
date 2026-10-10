@@ -15,6 +15,7 @@ from typing import Any, Optional
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
 from app.embedding.bge_m3 import BgeM3Embedder
+from app.generation.guardrails import screen_query
 from app.generation.prompt import build_rag_messages, extract_cited_indices, strip_thinking
 from app.retrieval.retriever import has_approved_content, probe_relevance
 from app.retrieval.retriever import search as retrieval_search
@@ -140,6 +141,49 @@ def _retrieval_query(query: str, history: Optional[list[dict[str, str]]]) -> str
     return query
 
 
+_CITATION_MARK_RE = re.compile(r"\[(\d+)\]")
+_ADJACENT_DUP_RE = re.compile(r"(\[\d+\])(?:\1)+")
+
+
+def _dedupe_citations_by_source(answer: str, chunks: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Several retrieved chunks usually come from the SAME source document, so an
+    answer can cite [1][2][3][4] that all point to one URL -- showing four
+    identical source chips is noise. Collapse to ONE citation per unique source:
+    give each source a single number (in order of first citation), rewrite the
+    bracket markers in the answer to match, and return one citation per source.
+    Markers that pointed at the same source then become adjacent duplicates
+    (e.g. [1][1][1]), which are collapsed to a single [1]. Markers pointing at an
+    out-of-range chunk number are dropped."""
+    source_to_new: dict[str, int] = {}
+    old_to_new: dict[int, int] = {}
+    citations: list[dict[str, Any]] = []
+    for old in extract_cited_indices(answer):
+        if not (1 <= old <= len(chunks)):
+            continue
+        c = chunks[old - 1]
+        url = c["source_url"]
+        if url not in source_to_new:
+            source_to_new[url] = len(source_to_new) + 1
+            citations.append(
+                {
+                    "index": source_to_new[url],
+                    "chunk_id": c["chunk_id"],
+                    "source_url": url,
+                    "service_category": c["service_category"],
+                    "canonical": c["canonical"],
+                }
+            )
+        old_to_new[old] = source_to_new[url]
+
+    def _remap(m: "re.Match[str]") -> str:
+        n = int(m.group(1))
+        return f"[{old_to_new[n]}]" if n in old_to_new else ""
+
+    new_answer = _CITATION_MARK_RE.sub(_remap, answer)
+    new_answer = _ADJACENT_DUP_RE.sub(r"\1", new_answer)
+    return new_answer, citations
+
+
 def answer_question(
     query: str,
     *,
@@ -161,6 +205,24 @@ def answer_question(
             "citations": [],
             "retrieved_count": 0,
             "smalltalk": True,
+        }
+
+    # Input guardrails (prompt-injection / jailbreak, and self-harm safety).
+    # These run before any retrieval or model call and answer directly. The
+    # query text is never logged -- only the guardrail kind -- since it can
+    # contain sensitive content.
+    guard = screen_query(query)
+    if guard is not None:
+        reply, kind = guard
+        logger.info(f"guardrail triggered (kind={kind}, chars={len(query)})")
+        return {
+            "query": query,
+            "answer": reply,
+            "grounded": False,
+            "citations": [],
+            "retrieved_count": 0,
+            # Tells the widget not to offer human escalation for these.
+            "guardrail": kind,
         }
 
     search_query = _retrieval_query(query, history)
@@ -251,20 +313,9 @@ def answer_question(
         }
     answer = strip_thinking(raw)
 
-    cited = extract_cited_indices(answer)
-    citations = []
-    for n in cited:
-        if 1 <= n <= len(chunks):
-            c = chunks[n - 1]
-            citations.append(
-                {
-                    "index": n,
-                    "chunk_id": c["chunk_id"],
-                    "source_url": c["source_url"],
-                    "service_category": c["service_category"],
-                    "canonical": c["canonical"],
-                }
-            )
+    # Collapse [1][2][3]... that all point to the same source document into one
+    # citation, renumbering the answer's bracket markers to match.
+    answer, citations = _dedupe_citations_by_source(answer, chunks)
 
     # "grounded" means the answer is backed by sources it actually cites. The
     # widget uses it to decide whether to offer the "raise a query with the
