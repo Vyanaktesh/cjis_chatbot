@@ -35,6 +35,7 @@ def upsert_chunk(conn, record: dict[str, Any]) -> None:
                 embedding_model = EXCLUDED.embedding_model,
                 qdrant_point_id = EXCLUDED.qdrant_point_id,
                 used_ocr = EXCLUDED.used_ocr,
+                review_status = EXCLUDED.review_status,
                 updated_at = now();
             """,
             {
@@ -58,6 +59,22 @@ def upsert_chunk(conn, record: dict[str, Any]) -> None:
                 "used_ocr": record["used_ocr"],
             },
         )
+
+
+def get_review_state(conn, chunk_ids: list) -> dict[str, dict]:
+    """Returns {chunk_id: {review_status, content_hash}} for those of
+    `chunk_ids` that already exist, locking the rows (FOR UPDATE) so a
+    reviewer's approve/reject can't land between this read and the upsert
+    that follows it in the same transaction."""
+    if not chunk_ids:
+        return {}
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT id, review_status, content_hash FROM chunks "
+            "WHERE id = ANY(%s::uuid[]) FOR UPDATE;",
+            ([str(i) for i in chunk_ids],),
+        )
+        return {str(row["id"]): row for row in cur.fetchall()}
 
 
 def count_chunks(conn) -> int:

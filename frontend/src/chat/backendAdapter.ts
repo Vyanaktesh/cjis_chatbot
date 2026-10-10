@@ -25,6 +25,32 @@ const API_BASE =
 // leave the form spinner stuck forever with no error.
 const SUBMIT_TIMEOUT_MS = 30000;
 
+// A chat answer normally arrives within a few seconds, but retrieval plus
+// generation can legitimately take longer under load. Past this, give up and
+// tell the user instead of spinning forever (the request previously had no
+// timeout at all, so a stalled server meant an endless "Looking into your
+// question..." with nothing the user could do).
+const CHAT_TIMEOUT_MS = 90000;
+
+/** An error whose text is meant to be shown to the user as-is. assistant-ui
+ * renders `String(error)`, which for a plain Error would add an "Error: "
+ * prefix, so toString() returns just the message. */
+class ChatError extends Error {
+  override toString(): string {
+    return this.message;
+  }
+}
+
+const EMPTY_ANSWER_FALLBACK =
+  "Sorry, I couldn't put an answer together for that. Could you try rephrasing your question?";
+
+function messageForStatus(status: number): string {
+  if (status === 429) {
+    return "You're sending messages too quickly. Please wait a minute and try again.";
+  }
+  return `The consulate assistant couldn't be reached (HTTP ${status}). Please try again in a moment.`;
+}
+
 /** fetch() with an AbortController timeout, translating an abort into a
  * clear, user-displayable message. */
 async function fetchWithTimeout(
@@ -125,36 +151,74 @@ export function createBackendAdapter(
           content: extractText(m),
         }));
 
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: query,
-          session_id: sessionId ?? undefined,
-          history,
-        }),
-        signal: abortSignal,
-      });
+      // One controller serves both ways a request can be abandoned: the user
+      // pressing Cancel (abortSignal from assistant-ui) and our own timeout.
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, CHAT_TIMEOUT_MS);
+      const onUserAbort = () => controller.abort();
+      if (abortSignal.aborted) controller.abort();
+      else abortSignal.addEventListener("abort", onUserAbort);
 
-      if (!res.ok) {
-        throw new Error(
-          `The consulate assistant couldn't be reached (HTTP ${res.status}). Please try again in a moment.`,
-        );
+      let data: ChatResponse;
+      try {
+        let res: Response;
+        try {
+          res = await fetch(`${API_BASE}/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: query,
+              session_id: sessionId ?? undefined,
+              history,
+            }),
+            signal: controller.signal,
+          });
+        } catch (err) {
+          if (timedOut) {
+            throw new ChatError(
+              "This is taking longer than expected. Please try again in a moment.",
+            );
+          }
+          if (abortSignal.aborted) throw err; // the user cancelled: not an error to display
+          throw new ChatError(
+            "Couldn't reach the assistant. Please check your connection and try again.",
+          );
+        }
+
+        if (!res.ok) throw new ChatError(messageForStatus(res.status));
+
+        try {
+          data = (await res.json()) as ChatResponse;
+        } catch {
+          throw new ChatError(
+            "The assistant sent a response that couldn't be read. Please try again.",
+          );
+        }
+      } finally {
+        clearTimeout(timer);
+        abortSignal.removeEventListener("abort", onUserAbort);
       }
 
-      const data = (await res.json()) as ChatResponse;
       sessionId = data.session_id ?? sessionId;
       onResult?.(data);
 
+      // An empty/blank answer (e.g. the model returned nothing) would render
+      // as an empty bubble, so show a fallback instead.
+      const answer = data.answer?.trim() ? data.answer : EMPTY_ANSWER_FALLBACK;
+
       const content: ThreadAssistantMessagePart[] = [
-        { type: "text", text: data.answer },
-        ...data.citations.map(
+        { type: "text", text: answer },
+        ...(data.citations ?? []).map(
           (c): ThreadAssistantMessagePart => ({
             type: "source" as const,
             sourceType: "url" as const,
             id: c.chunk_id,
             url: c.source_url,
-            title: `[${c.index}] ${c.service_category.toUpperCase()} source`,
+            title: `[${c.index}] ${(c.service_category ?? "source").toUpperCase()} source`,
           }),
         ),
       ];

@@ -1,8 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  ActionBarPrimitive,
   ComposerPrimitive,
+  ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   ExternalLink,
@@ -232,6 +235,19 @@ function AssistantMessage() {
           </MessagePrimitive.Content>
         </BotBubble>
       </MessagePrimitive.If>
+      {/* A failed request (server error, rate limit, timeout, no network)
+          has no content, so without this the user saw their own question and
+          then nothing at all. */}
+      <MessagePrimitive.Error>
+        <BotBubble>
+          <ErrorPrimitive.Root role="alert">
+            <ErrorPrimitive.Message className="block" />
+          </ErrorPrimitive.Root>
+          <ActionBarPrimitive.Reload className="mt-2.5 rounded-full bg-[var(--cc-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--cc-accent-ink)] transition-colors hover:bg-[var(--cc-accent-hover)] disabled:opacity-40">
+            Try again
+          </ActionBarPrimitive.Reload>
+        </BotBubble>
+      </MessagePrimitive.Error>
     </MessagePrimitive.Root>
   );
 }
@@ -299,6 +315,9 @@ function ThinkingIndicator() {
           <span>
             Looking into your question&hellip; <ElapsedSeconds />
           </span>
+          <ComposerPrimitive.Cancel className="ml-1 rounded-full px-2 py-0.5 text-xs font-medium text-[var(--cc-accent-text)] transition-colors hover:bg-[var(--cc-surface-2)]">
+            Cancel
+          </ComposerPrimitive.Cancel>
         </div>
       </div>
     </ThreadPrimitive.If>
@@ -498,6 +517,21 @@ function ChatPanel({
   const [seenResult, setSeenResult] = useState<ChatResponse | null>(null);
   const [citizenFlow, setCitizenFlow] = useState<CitizenFlow>("hidden");
   const [citizenReference, setCitizenReference] = useState<string | null>(null);
+
+  // A new question was asked: drop the previous answer's follow-up prompt
+  // ("Did this answer your question?" etc.). Otherwise, if the new request
+  // fails, that stale prompt stays on screen and looks like it belongs to the
+  // failed one. Done during render, before the reply handling below, so that
+  // if a reply lands in the same update it still wins. The ticket form being
+  // filled in is left alone.
+  const userMessageCount = useAuiState(
+    (s) => s.thread.messages.filter((m) => m.role === "user").length,
+  );
+  const [seenUserMessageCount, setSeenUserMessageCount] = useState(userMessageCount);
+  if (userMessageCount !== seenUserMessageCount) {
+    setSeenUserMessageCount(userMessageCount);
+    if (flow !== "ticketForm") setFlow("idle");
+  }
 
   // A fresh reply arrived: pick the post-answer flow.
   //  - grounded answer      -> ask whether it helped

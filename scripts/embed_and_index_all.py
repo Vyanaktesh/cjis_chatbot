@@ -67,6 +67,13 @@ def main() -> int:
     all_records = [r for _, _, records in per_source for r in records]
     print(f"{len(all_records)} total chunks to embed.\n")
 
+    empty_sources = [source.title or source.url for source, _, records in per_source if not records]
+    if empty_sources:
+        print(f"WARNING: {len(empty_sources)} source(s) extracted to ZERO chunks and will be invisible to the chatbot:")
+        for title in empty_sources:
+            print(f"  - {title}")
+        print()
+
     print(f"Loading {MODEL_NAME} (downloads on first run, cached after)...")
     t0 = time.time()
     embedder = BgeM3Embedder(batch_size=12)

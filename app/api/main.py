@@ -46,6 +46,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.logging_config import configure_logging, get_logger
@@ -69,7 +70,14 @@ app = FastAPI(title="Consulate RAG Chatbot — Public API", version="0.9.0")
 # makes a 429 response still carry CORS headers; without that, a rate
 # limit hit shows the browser a generic network error instead of the
 # actual "please slow down" message.
-limiter = Limiter(key_func=get_remote_address)
+# The key is the client IP as the server sees it. Behind a reverse proxy / load
+# balancer / CDN that is the PROXY's IP unless uvicorn is told which proxies to
+# trust (--proxy-headers --forwarded-allow-ips=<proxy ip(s)>, never "*"), so
+# every visitor would share one bucket. See "Running behind a reverse proxy" in
+# LOCAL_SETUP.md. `rate_limit_storage_uri` points the counters at a shared store
+# (e.g. redis://...) when running more than one worker; the default in-memory
+# store is per-process, so N workers would allow N times the limit.
+limiter = Limiter(key_func=get_remote_address, storage_uri=settings.rate_limit_storage_uri)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
@@ -364,7 +372,13 @@ async def submit_citizen_corner(
         photo_content_type = photo.content_type
 
     try:
-        ticket_id = hubspot.create_citizen_submission(
+        # hubspot.* makes blocking HTTP calls (up to three in a row). This
+        # handler is `async` only because of `await photo.read()` above, so
+        # the blocking call must be pushed to a worker thread -- run directly
+        # it freezes the event loop and stalls every other request (chat,
+        # health checks) for the whole HubSpot round trip.
+        ticket_id = await run_in_threadpool(
+            hubspot.create_citizen_submission,
             name=name,
             email=email,
             title=title,
