@@ -611,6 +611,17 @@ class TranscribeResponse(BaseModel):
     text: str
 
 
+def _audio_type_accepted(content_type: Optional[str]) -> bool:
+    """Browsers label recordings with codec parameters (Chrome sends
+    'audio/webm;codecs=opus', Safari 'audio/mp4'), so compare only the base
+    media type, not the full string. An empty/absent type is allowed through --
+    ffmpeg re-detects the real container from the bytes anyway."""
+    if not content_type:
+        return True
+    base = content_type.split(";")[0].strip().lower()
+    return base in _ALLOWED_AUDIO_CONTENT_TYPES
+
+
 def _convert_and_transcribe(raw: bytes) -> str:
     """Convert the uploaded audio to 16 kHz mono WAV with ffmpeg, then run
     whisper.cpp on it. Blocking (ffmpeg subprocess + CPU transcription), so the
@@ -652,7 +663,7 @@ async def transcribe(
     (MediaRecorder webm/opus by default) and returns the transcribed text for
     the user to review before sending. Nothing is sent to any cloud STT
     service -- see app/transcription/whisper_backend.py."""
-    if audio.content_type and audio.content_type not in _ALLOWED_AUDIO_CONTENT_TYPES:
+    if not _audio_type_accepted(audio.content_type):
         raise HTTPException(status_code=422, detail="Unsupported audio format.")
     raw = await audio.read()
     if not raw:

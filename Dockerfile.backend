@@ -23,19 +23,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
-COPY db ./db
-COPY scripts ./scripts
-
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     WHISPER_MODEL_SIZE=base.en
 
-# Pre-warm the models into the image so the first request is fast.
-# WARMUP_ON_STARTUP=false here only affects this build-time import; the running
-# container's behaviour is controlled by its own env.
-RUN WARMUP_ON_STARTUP=false python -c "from pywhispercpp.model import Model; Model('base.en')" \
-    && python -c "from app.embedding.bge_m3 import BgeM3Embedder; BgeM3Embedder(batch_size=1)"
+# Pre-bake both models into the image so the first request is fast. This runs
+# BEFORE copying app code (and downloads straight from the libraries, not via
+# app imports) so that editing app/ does NOT invalidate this ~2GB+ layer --
+# backend code changes then rebuild in seconds instead of re-downloading models.
+RUN python -c "from pywhispercpp.model import Model; Model('base.en')" \
+    && python -c "from FlagEmbedding import BGEM3FlagModel; BGEM3FlagModel('BAAI/bge-m3', use_fp16=False)"
+
+COPY app ./app
+COPY db ./db
+COPY scripts ./scripts
 
 # NOTE: Playwright's browser binaries are deliberately NOT installed
 # (`playwright install` is never run). The fetch/ingest pipeline is a one-time
