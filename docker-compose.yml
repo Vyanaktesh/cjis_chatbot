@@ -53,6 +53,69 @@ services:
     networks:
       - rag_net
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: rag_backend
+    restart: unless-stopped
+    # Secrets + tuning come from .env (copy .env.example). The overrides below
+    # point the app at the compose service names, so the SAME .env still works
+    # for non-docker local dev (where these default to localhost).
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      QDRANT_HOST: qdrant
+      QDRANT_HTTP_PORT: "6333"
+      QDRANT_GRPC_PORT: "6334"
+    volumes:
+      # Approved content is served from Qdrant/Postgres; the embedding + whisper
+      # models are baked into the image. This mount just lets the fetch/ingest
+      # pipeline's downloaded GGUF generation model (if used) persist.
+      - ./data/models:/app/data/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      # 200 only when Postgres AND Qdrant are reachable (see /health). -f fails
+      # on the 503 it returns otherwise, so "healthy" means genuinely ready.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    networks:
+      - rag_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty => the SPA uses relative API paths that nginx proxies to the
+        # backend on this same origin (see frontend/nginx.conf).
+        VITE_API_BASE_URL: ""
+    container_name: rag_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # 127.0.0.1, not localhost: in the container localhost can resolve to
+      # ::1 (IPv6) first, where nginx isn't listening, so the check would fail
+      # even though the server is up.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - rag_net
+
 networks:
   rag_net:
     driver: bridge

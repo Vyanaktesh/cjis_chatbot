@@ -1,0 +1,45 @@
+# Backend API image for the single-instance (AWS Lightsail) demo deployment.
+#
+# Bakes in BOTH model downloads at build time -- the BGE-M3 embedding model and
+# the whisper.cpp STT model -- so the first live request doesn't pay the
+# download/load cost. This makes the image large but the running container fast,
+# which is the right trade for a demo box.
+FROM python:3.12-slim
+
+# Build + runtime system deps:
+#  - build-essential, cmake, git: pywhispercpp and llama-cpp-python compile
+#    native extensions at pip-install time.
+#  - ffmpeg: converts browser webm/opus recordings to 16 kHz mono WAV for
+#    whisper.cpp (see app/api/main.py's /transcribe).
+#  - libgomp1: OpenMP runtime used by torch / whisper.cpp.
+#  - curl: container healthcheck.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential cmake git ffmpeg libgomp1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+COPY db ./db
+COPY scripts ./scripts
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    WHISPER_MODEL_SIZE=base.en
+
+# Pre-warm the models into the image so the first request is fast.
+# WARMUP_ON_STARTUP=false here only affects this build-time import; the running
+# container's behaviour is controlled by its own env.
+RUN WARMUP_ON_STARTUP=false python -c "from pywhispercpp.model import Model; Model('base.en')" \
+    && python -c "from app.embedding.bge_m3 import BgeM3Embedder; BgeM3Embedder(batch_size=1)"
+
+# NOTE: Playwright's browser binaries are deliberately NOT installed
+# (`playwright install` is never run). The fetch/ingest pipeline is a one-time
+# offline job, not something the live chat container needs.
+
+EXPOSE 8000
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

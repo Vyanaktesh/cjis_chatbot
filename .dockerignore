@@ -1,0 +1,24 @@
+# Keep the build context small and never ship local data / secrets.
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+
+# Local data + model volumes (mounted/created at runtime, not baked in)
+data/
+
+# Frontend has its own image (frontend/Dockerfile)
+frontend
+
+# Local env + docs
+.env
+*.env.local
+*.md
+
+# Host/session cruft
+.claude
+.cache
+.config
