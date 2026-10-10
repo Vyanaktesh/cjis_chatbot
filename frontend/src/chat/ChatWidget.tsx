@@ -155,7 +155,7 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="group flex max-w-full items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:border-[var(--cc-accent)]"
+      className="group flex w-fit min-w-0 max-w-[15rem] items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:border-[var(--cc-accent)]"
       title={`${category ? `${category} · ` : ""}${url}`}
     >
       {index && (
