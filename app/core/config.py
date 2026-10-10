@@ -152,22 +152,19 @@ class Settings(BaseSettings):
 
     # --- Gemini API (only used when generation_backend == "gemini") ---
     gemini_api_key: str | None = None
-    # gemini-2.5-flash is retired for new API accounts (Google returns 404 and
-    # points to the 3.x line), so default to a current model. Override via
-    # GEMINI_MODEL in .env if your account needs a different one.
-    gemini_model: str = "gemini-3.8-flash"
-    # Separate token budget from generation_max_tokens above -- that value
-    # (350) was deliberately kept low to bound worst-case *latency* on the
-    # CPU-only Qwen path, which doesn't apply to Gemini. Gemini 2.5 Flash is
-    # a "thinking" model: internal reasoning tokens are deducted from
-    # max_output_tokens *before* the visible answer, so a low cap here can
-    # silently truncate or empty out the real answer (a documented Gemini
-    # 2.5 Flash gotcha, not specific to this project). thinking_budget=0
-    # disables that reasoning step entirely -- unnecessary overhead for a
-    # straightforward "cite from these sources" task anyway -- so the full
-    # budget goes to the visible answer.
+    # gemini-2.5-flash is retired for new API accounts (404). The full
+    # gemini-3.x "flash" models are "thinking" models and were measured at
+    # 40s+ per answer on this account -- far too slow for live chat. The
+    # "flash-lite" line answers the same grounded "cite from these sources"
+    # task in ~1-2s, so default to it. Override via GEMINI_MODEL in .env.
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_max_output_tokens: int = 1024
-    gemini_thinking_budget: int = 0
+    # The model's internal "thinking" pass. On Gemini 2.5 Flash, 0 disabled it.
+    # On Gemini 3.x models, 0 is rejected (400 INVALID_ARGUMENT), and the lite
+    # models are fast without it, so a NEGATIVE value means "omit thinking_config
+    # entirely and use the model default" (see gemini_backend.py). Use 0 only if
+    # you switch GEMINI_MODEL back to a 2.5 model.
+    gemini_thinking_budget: int = -1
     # Per-call HTTP timeout. The SDK's default is no timeout at all, so one
     # stalled Google call would hold a worker thread forever and, with enough
     # of them, freeze the whole API. gemini_total_budget_seconds bounds a

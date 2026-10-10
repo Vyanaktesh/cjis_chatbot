@@ -79,19 +79,24 @@ class GeminiGenerator:
 
         settings = get_settings()
         system_instruction, contents = _to_gemini_contents(messages)
-        config = types.GenerateContentConfig(
+        config_kwargs: dict[str, Any] = dict(
             system_instruction=system_instruction,
             max_output_tokens=max_tokens or settings.gemini_max_output_tokens,
             temperature=temperature,
-            # See gemini_max_output_tokens/gemini_thinking_budget comments
-            # in app/core/config.py -- disables Gemini 2.5 Flash's default
-            # internal "thinking" pass, which otherwise competes with the
-            # visible answer for the same max_output_tokens budget and can
-            # silently truncate or empty out the response.
-            thinking_config=types.ThinkingConfig(
-                thinking_budget=settings.gemini_thinking_budget
-            ),
         )
+        # thinking_budget controls the model's internal "thinking" pass. On
+        # Gemini 2.5 Flash, budget=0 disables it (it otherwise competes with the
+        # visible answer for max_output_tokens). On Gemini 3.x models, budget=0
+        # is an INVALID_ARGUMENT (400) and the lite models are already fast
+        # without any thinking, so a NEGATIVE budget here means "omit
+        # thinking_config entirely and let the model use its default" -- the
+        # correct choice for the 3.x lite default. Set it to 0 only if you
+        # switch back to a 2.5 model.
+        if settings.gemini_thinking_budget >= 0:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.gemini_thinking_budget
+            )
+        config = types.GenerateContentConfig(**config_kwargs)
 
         attempts = len(_RATE_LIMIT_RETRY_DELAYS) + 1
         last_error: Optional[Exception] = None
