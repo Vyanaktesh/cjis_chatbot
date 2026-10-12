@@ -225,61 +225,59 @@ export function CitizenCornerForm({
         />
       </Field>
 
-      <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-xs text-[var(--cc-text-soft)]">
-          <input
-            type="checkbox"
-            checked={anonymous}
-            onChange={(e) => setAnonymous(e.target.checked)}
-            className="h-3.5 w-3.5 rounded border-[var(--cc-border-strong)] text-[var(--cc-accent)] focus:ring-[var(--cc-accent)]"
-          />
-          Publish anonymously if approved
-        </label>
-
+      <label className="flex items-center gap-2 text-xs text-[var(--cc-text-soft)]">
         <input
-          ref={fileInputRef}
-          type="file"
-          accept={ALLOWED_PHOTO_TYPES.join(",")}
-          multiple
-          className="hidden"
-          onChange={(e) => addPhotos(e.target.files)}
+          type="checkbox"
+          checked={anonymous}
+          onChange={(e) => setAnonymous(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-[var(--cc-border-strong)] text-[var(--cc-accent)] focus:ring-[var(--cc-accent)]"
         />
+        Publish anonymously if approved
+      </label>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ALLOWED_PHOTO_TYPES.join(",")}
+        multiple
+        className="hidden"
+        onChange={(e) => addPhotos(e.target.files)}
+      />
+      <div className="space-y-1.5">
+        {photos.map((file, i) => (
+          <div
+            key={`${file.name}-${i}`}
+            className="flex items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)]"
+          >
+            <Paperclip className="h-3.5 w-3.5 shrink-0 text-[var(--cc-text-faint)]" />
+            <span className="truncate">{file.name}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-[var(--cc-text-faint)]">
+              {(file.size / (1024 * 1024)).toFixed(1)}MB
+            </span>
+            <button
+              type="button"
+              onClick={() => removePhoto(i)}
+              aria-label={`Remove ${file.name}`}
+              className="shrink-0 text-[var(--cc-text-faint)] transition-colors hover:text-[var(--cc-text)]"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+
         {photos.length < MAX_PHOTOS && (
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex shrink-0 items-center gap-1 rounded-full border border-[var(--cc-border)] px-2.5 py-1 text-xs font-medium text-[var(--cc-text-soft)] transition-colors hover:bg-[var(--cc-surface-2)]"
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-[var(--cc-border)] bg-[var(--cc-surface-2)]/50 px-2.5 py-2 text-xs font-medium text-[var(--cc-text-soft)] transition-colors hover:border-[var(--cc-accent)] hover:bg-[var(--cc-accent-soft)]/40 hover:text-[var(--cc-accent-text)]"
           >
             <Paperclip className="h-3.5 w-3.5" />
-            {photos.length ? "Add another" : "Attach photos"}
+            {photos.length === 0
+              ? "Attach photos"
+              : `Add another (${photos.length}/${MAX_PHOTOS})`}
           </button>
         )}
       </div>
-
-      {photos.length > 0 && (
-        <ul className="space-y-1.5">
-          {photos.map((file, i) => (
-            <li
-              key={`${file.name}-${i}`}
-              className="flex items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)]"
-            >
-              <Paperclip className="h-3.5 w-3.5 shrink-0 text-[var(--cc-text-faint)]" />
-              <span className="truncate">{file.name}</span>
-              <span className="ml-auto shrink-0 text-[10px] text-[var(--cc-text-faint)]">
-                {(file.size / (1024 * 1024)).toFixed(1)}MB
-              </span>
-              <button
-                type="button"
-                onClick={() => removePhoto(i)}
-                aria-label={`Remove ${file.name}`}
-                className="shrink-0 text-[var(--cc-text-faint)] transition-colors hover:text-[var(--cc-text)]"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
       {photoError && (
         <p className="rounded-lg bg-red-500/10 px-2.5 py-1.5 text-xs text-red-600">
           {photoError}
