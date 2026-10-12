@@ -13,10 +13,10 @@ import {
   Maximize2,
   Minimize2,
   Moon,
+  Play,
   Send,
   Square,
   Sun,
-  Volume2,
   X,
 } from "lucide-react";
 import type { ChatResponse } from "./backendAdapter";
@@ -526,9 +526,11 @@ type Flow =
   | "ticketSuccess";
 type CitizenFlow = "hidden" | "form" | "success";
 
-/** Controls for the spoken answer (voice mode). Appears only when the backend
- * returned a spoken_text (i.e. the question came from the mic). The full written
- * answer and citation chips stay in the thread above regardless. */
+const VOICE_SPEEDS = [1, 1.25, 1.5];
+
+/** Premium playback panel for a spoken answer (voice mode). Appears only when
+ * the backend returned a spoken_text (the question came from the mic). The full
+ * written answer and citation chips stay in the thread above regardless. */
 function VoiceBar({
   speaking,
   rate,
@@ -544,42 +546,77 @@ function VoiceBar({
   onReplay: () => void;
   onFull: () => void;
 }) {
-  const btn =
-    "rounded-full border border-[var(--cc-border)] px-2.5 py-1 font-medium text-[var(--cc-text-soft)] transition-colors hover:border-[var(--cc-accent)] hover:text-[var(--cc-accent-text)]";
   return (
-    <div className="flex items-center gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface-2)] px-3 py-2 text-xs">
-      <span className="flex shrink-0 items-center gap-1.5 font-semibold text-[var(--cc-text-soft)]">
-        <Volume2
-          className={`h-4 w-4 ${speaking ? "animate-pulse text-[var(--cc-accent)]" : ""}`}
-        />
-        {speaking ? "Speaking" : "Voice answer"}
-      </span>
-      {speaking ? (
-        <button type="button" onClick={onStop} className={`${btn} flex items-center gap-1`}>
-          <Square className="h-3 w-3" />
-          Stop
-        </button>
-      ) : (
-        <button type="button" onClick={onReplay} className={btn}>
-          Replay
-        </button>
-      )}
-      <button type="button" onClick={onFull} className={btn}>
-        Full answer
-      </button>
-      <label className="ml-auto flex shrink-0 items-center gap-1 text-[var(--cc-text-faint)]">
-        Speed
-        <select
-          value={rate}
-          onChange={(e) => onRate(Number(e.target.value))}
-          className="rounded-md border border-[var(--cc-border)] bg-[var(--cc-surface)] px-1 py-0.5 text-[var(--cc-text)] outline-none"
+    <div className="border-t border-[var(--cc-border-soft)] bg-gradient-to-b from-[var(--cc-accent-soft)] to-[var(--cc-surface)] px-3.5 py-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={speaking ? onStop : onReplay}
+          aria-label={speaking ? "Stop playback" : "Play the voice answer"}
+          className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--cc-accent)] text-[var(--cc-accent-ink)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:bg-[var(--cc-accent-hover)] active:scale-95"
         >
-          <option value={0.9}>0.9x</option>
-          <option value={1}>1x</option>
-          <option value={1.25}>1.25x</option>
-          <option value={1.5}>1.5x</option>
-        </select>
-      </label>
+          {speaking && (
+            <span className="absolute inset-0 rounded-full bg-[var(--cc-accent)] opacity-30 animate-ping" />
+          )}
+          {speaking ? (
+            <Square className="relative h-4 w-4" />
+          ) : (
+            <Play className="relative h-[18px] w-[18px] translate-x-[1px]" />
+          )}
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={`voice-eq ${speaking ? "is-speaking" : ""}`}
+              aria-hidden="true"
+            >
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="truncate text-[13px] font-semibold text-[var(--cc-text)]">
+              {speaking ? "Playing answer" : "Voice answer ready"}
+            </span>
+          </div>
+          <p className="mt-0.5 truncate text-[11px] text-[var(--cc-text-soft)]">
+            Spoken summary. Full details stay on screen.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={onFull}
+          className="shrink-0 rounded-full border border-[var(--cc-border)] bg-[var(--cc-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-colors hover:border-[var(--cc-accent)] hover:text-[var(--cc-accent-text)]"
+        >
+          Full answer
+        </button>
+      </div>
+
+      <div className="mt-2.5 flex items-center gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--cc-text-faint)]">
+          Speed
+        </span>
+        <div className="flex overflow-hidden rounded-full border border-[var(--cc-border)] bg-[var(--cc-surface)] text-[11px]">
+          {VOICE_SPEEDS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onRate(s)}
+              aria-pressed={rate === s}
+              className={`px-3 py-1 font-semibold transition-colors ${
+                rate === s
+                  ? "bg-[var(--cc-accent)] text-[var(--cc-accent-ink)]"
+                  : "text-[var(--cc-text-soft)] hover:bg-[var(--cc-surface-2)]"
+              }`}
+            >
+              {s}x
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
