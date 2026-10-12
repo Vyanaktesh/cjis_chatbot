@@ -105,9 +105,13 @@ export function MicButton() {
         const existing = composer.value;
         const joiner = existing && !existing.endsWith(" ") ? " " : "";
         composer.setText(existing + joiner + text);
-        // The question came from the mic: the next send should request a spoken
-        // answer and auto-play it (see backendAdapter + ChatWidget).
+        // The question came from the mic: request a spoken answer and auto-play
+        // it (see backendAdapter + ChatWidget).
         markNextQuestionAsVoice();
+        // Auto-send: a voice user should just speak and hear the answer, not have
+        // to find and tap Send. setText commits synchronously; send on the next
+        // tick so the composer value is in place first.
+        setTimeout(() => composer.send(), 0);
       } else {
         setError("Didn't catch that. Please try again.");
       }
