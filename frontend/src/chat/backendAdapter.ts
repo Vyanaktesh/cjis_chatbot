@@ -65,13 +65,7 @@ async function fetchWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // credentials: "include" so the login session cookie (see
-    // app/api/auth.py) rides along on cross-origin dev requests too.
-    return await fetch(url, {
-      ...init,
-      credentials: "include",
-      signal: controller.signal,
-    });
+    return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error(
@@ -199,7 +193,6 @@ export function createBackendAdapter(
           res = await fetch(`${API_BASE}/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            credentials: "include",
             body: JSON.stringify({
               message: query,
               session_id: sessionId ?? undefined,
@@ -258,51 +251,6 @@ export function createBackendAdapter(
       return { content };
     },
   };
-}
-
-/* ---- Login gate (shared password; see app/api/auth.py) ----------------- */
-
-export type AuthStatus = {
-  login_required: boolean;
-  authenticated: boolean;
-};
-
-/** GET /auth/me -- whether a password is configured at all, and whether this
- * browser is currently signed in. On any network error, assume the gate is
- * off so a backend hiccup can't lock the user out of a demo. */
-export async function fetchAuthStatus(): Promise<AuthStatus> {
-  try {
-    const res = await fetchWithTimeout(
-      `${API_BASE}/auth/me`,
-      { method: "GET" },
-      SUBMIT_TIMEOUT_MS,
-    );
-    if (!res.ok) return { login_required: false, authenticated: true };
-    return (await res.json()) as AuthStatus;
-  } catch {
-    return { login_required: false, authenticated: true };
-  }
-}
-
-/** POST /auth/login. Resolves true on success, false on a wrong password;
- * throws only on a network/server failure the caller should surface. */
-export async function login(password: string): Promise<boolean> {
-  const res = await fetchWithTimeout(
-    `${API_BASE}/auth/login`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    },
-    SUBMIT_TIMEOUT_MS,
-  );
-  if (res.status === 401) return false;
-  if (!res.ok) {
-    throw new Error(
-      `Could not sign in (HTTP ${res.status}). Please try again in a moment.`,
-    );
-  }
-  return true;
 }
 
 /** POSTs a recorded audio blob to /transcribe (self-hosted whisper.cpp) and

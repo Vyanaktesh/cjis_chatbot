@@ -46,7 +46,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -56,8 +56,6 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
 
-from app.api import auth
-from app.api.auth import require_login
 from app.core.config import get_settings, production_config_problems
 from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
@@ -193,55 +191,13 @@ _cors_origins = (
     if settings.cors_allowed_origins.strip() == "*"
     else [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
 )
-# allow_credentials=True so the browser sends/accepts the session cookie
-# (see app/api/auth.py). In production the frontend and API are served from
-# the SAME origin via nginx (see frontend/nginx.conf), so CORS does not even
-# apply there; this matters for cross-origin local dev. Starlette echoes the
-# specific request origin (not "*") on credentialed requests even when
-# _cors_origins is ["*"], which is what makes the cookie work in that case.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-
-# --- Login gate (shared password; see app/api/auth.py) --------------------
-class LoginRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=500)
-
-
-@app.post("/auth/login")
-@limiter.limit(settings.rate_limit_submit)
-def auth_login(request: Request, body: LoginRequest):
-    """Exchange the shared password for a signed session cookie. When the gate
-    is disabled (no LOGIN_PASSWORD) any login is accepted and a cookie is still
-    set, so the frontend's flow works identically either way."""
-    if auth.login_required(settings) and not auth.password_matches(body.password, settings):
-        raise HTTPException(status_code=401, detail="Incorrect password.")
-    response = JSONResponse({"authenticated": True})
-    auth.issue_session_cookie(response, settings)
-    return response
-
-
-@app.get("/auth/me")
-def auth_me(request: Request):
-    """Reports whether a password is required at all, and whether this browser
-    is currently authenticated. The frontend calls this on load to decide
-    between the login screen and the chat widget."""
-    return {
-        "login_required": auth.login_required(settings),
-        "authenticated": auth.is_authenticated(request, settings),
-    }
-
-
-@app.post("/auth/logout")
-def auth_logout(request: Request):
-    response = JSONResponse({"authenticated": False})
-    auth.clear_session_cookie(response, settings)
-    return response
 
 @app.get("/health")
 def health():
@@ -272,7 +228,6 @@ def health():
 def search(
     request: Request,
     q: str = Query(..., min_length=1, max_length=500),
-    _auth: None = Depends(require_login),
     limit: int = 8,
     service_category: Optional[str] = Query(None, max_length=100),
     canonical: Optional[bool] = None,
@@ -344,7 +299,7 @@ class GenerateRequest(BaseModel):
 
 @app.post("/generate")
 @limiter.limit(settings.rate_limit_generate)
-def generate(request: Request, body: GenerateRequest, _auth: None = Depends(require_login)):
+def generate(request: Request, body: GenerateRequest):
     """
     Phase 7: retrieval (approved-only) + a grounded Qwen3 answer with
     bracket citations back to the retrieved chunks. If retrieval finds
@@ -400,7 +355,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 @limiter.limit(settings.rate_limit_generate)
-def chat(request: Request, body: ChatRequest, _auth: None = Depends(require_login)):
+def chat(request: Request, body: ChatRequest):
     """
     Phase 8: frontend-facing chat endpoint. Thin wrapper over the same
     answer_question() pipeline as /generate, shaped for the React widget:
@@ -479,7 +434,7 @@ class SupportTicketResponse(BaseModel):
 
 @app.post("/support/ticket", response_model=SupportTicketResponse)
 @limiter.limit(settings.rate_limit_submit)
-def create_support_ticket(request: Request, body: SupportTicketRequest, _auth: None = Depends(require_login)):
+def create_support_ticket(request: Request, body: SupportTicketRequest):
     """
     Escalation path for when the chatbot can't ground an answer (see
     app/generation/service.py's OUT_OF_SCOPE_ANSWER / NO_CONTEXT_ANSWER /
@@ -528,7 +483,6 @@ async def submit_citizen_corner(
     submission_type: str = Form(..., max_length=30),
     anonymous: bool = Form(False),
     photo: Optional[UploadFile] = File(None),
-    _auth: None = Depends(require_login),
 ):
     """
     A citizen may share a testimonial, feedback, or photo at any point,
@@ -664,7 +618,6 @@ def _convert_and_transcribe(raw: bytes) -> str:
 async def transcribe(
     request: Request,
     audio: UploadFile = File(...),
-    _auth: None = Depends(require_login),
 ):
     """Self-hosted speech-to-text: accepts a short browser audio recording
     (MediaRecorder webm/opus by default) and returns the transcribed text for

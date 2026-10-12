@@ -211,13 +211,8 @@ docker compose up -d          # brings up all four services
 
 Before a real deployment, set in `.env`:
 
-- `LOGIN_PASSWORD` — the shared access password. Leave it empty and the whole
-  app is open (fine for local dev only). When set, visitors see a login screen
-  and every API route except `/health` requires the session cookie.
-- `SESSION_SECRET` — a long random string that signs the session cookie.
 - `POSTGRES_PASSWORD` — not the dev default.
 - `CORS_ALLOWED_ORIGINS` — the real site origin (not `*`).
-- `SESSION_COOKIE_SECURE=true` once served over HTTPS.
 - `APP_ENV=production` — makes the backend refuse to start if any of the above
   are still unsafe.
 

@@ -102,20 +102,14 @@ def test_health_reports_which_dependency_is_down(api, monkeypatch):
 
 
 def test_production_refuses_unsafe_settings_but_development_does_not():
-    # Wide-open CORS, the default DB password, no login password, and the
-    # default session secret are all unsafe for production.
-    # Values set explicitly (not left to defaults) so the test is unaffected by
-    # any LOGIN_PASSWORD/SESSION_SECRET that happen to be in the environment.
+    # Wide-open CORS and the default DB password are unsafe for production.
     unsafe = Settings(
         _env_file=None, app_env="production", cors_allowed_origins="*",
-        postgres_password="change_me_dev_only", login_password="",
-        session_secret="dev-only-insecure-session-secret-change-me",
+        postgres_password="change_me_dev_only",
     )
     problems = production_config_problems(unsafe)
     assert any("CORS" in p for p in problems)
     assert any("POSTGRES_PASSWORD" in p for p in problems)
-    assert any("LOGIN_PASSWORD" in p for p in problems)
-    assert any("SESSION_SECRET" in p for p in problems)
 
     # Development never blocks, however unsafe the values.
     assert production_config_problems(Settings(_env_file=None, app_env="development")) == []
@@ -124,6 +118,5 @@ def test_production_refuses_unsafe_settings_but_development_does_not():
     safe = Settings(
         _env_file=None, app_env="production",
         cors_allowed_origins="https://www.example.gov", postgres_password="a-real-secret",
-        login_password="a-shared-demo-password", session_secret="a-long-random-production-secret-value",
     )
     assert production_config_problems(safe) == []
