@@ -387,6 +387,10 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     session_id: Optional[str] = Field(None, max_length=64)
     history: Optional[list[ChatTurn]] = Field(None, max_length=MAX_HISTORY_TURNS)
+    # "voice" additionally returns a short `spoken_text` to read aloud (same
+    # grounded answer underneath -- see app/generation/service.py). Default
+    # "text" is unchanged behaviour.
+    mode: Literal["text", "voice"] = "text"
 
     @field_validator("message")
     @classmethod
@@ -412,11 +416,11 @@ def chat(request: Request, body: ChatRequest, _auth: None = Depends(require_logi
     """
     session_id = body.session_id or str(uuid.uuid4())
     history = [h.model_dump() for h in body.history] if body.history else None
-    result = _answer_or_degrade(body.message, history)
+    result = _answer_or_degrade(body.message, history, mode=body.mode)
     return {"session_id": session_id, **result}
 
 
-def _answer_or_degrade(query: str, history):
+def _answer_or_degrade(query: str, history, mode: str = "text"):
     """Runs the RAG pipeline, but never lets an infrastructure failure
     (Qdrant/Postgres/embedding-model down) surface as a raw 500 with a
     traceback to the browser. answer_question already degrades gracefully on
@@ -425,10 +429,10 @@ def _answer_or_degrade(query: str, history):
     widget treats it as a transient outage ("try again") rather than a
     genuine can't-answer that offers human escalation."""
     try:
-        return answer_question(query, history=history)
+        return answer_question(query, history=history, mode=mode)
     except Exception as exc:  # noqa: BLE001 -- last-resort guard, logged below
         logger.exception("chat/generate pipeline failed")
-        return {
+        degraded = {
             "query": query,
             "answer": GENERATION_UNAVAILABLE_ANSWER,
             "grounded": False,
@@ -436,6 +440,9 @@ def _answer_or_degrade(query: str, history):
             "retrieved_count": 0,
             "generation_error": "pipeline_unavailable",
         }
+        if mode == "voice":
+            degraded["spoken_text"] = GENERATION_UNAVAILABLE_ANSWER
+        return degraded
 
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")

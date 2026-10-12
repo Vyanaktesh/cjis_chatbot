@@ -16,7 +16,14 @@ from app.core.config import get_settings
 from app.core.logging_config import get_logger
 from app.embedding.bge_m3 import BgeM3Embedder
 from app.generation.guardrails import screen_query
-from app.generation.prompt import build_rag_messages, extract_cited_indices, strip_thinking
+from app.generation.prompt import (
+    build_rag_messages,
+    build_voice_messages,
+    extract_cited_indices,
+    first_sentences,
+    strip_for_speech,
+    strip_thinking,
+)
 from app.retrieval.retriever import has_approved_content, probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
@@ -185,6 +192,47 @@ def _dedupe_citations_by_source(answer: str, chunks: list[dict[str, Any]]) -> tu
 
 
 def answer_question(
+    query: str,
+    *,
+    mode: str = "text",
+    generator: Optional[Any] = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Public entry point. Runs the grounded pipeline unchanged, then — only in
+    voice mode — attaches a `spoken_text` field (a short summary of the already
+    grounded answer, safe to read aloud). mode="text" (the default) returns
+    exactly what it always did, so existing callers are unaffected."""
+    result = _answer_core(query, generator=generator, **kwargs)
+    if mode == "voice":
+        _attach_spoken_text(result, generator)
+    return result
+
+
+def _attach_spoken_text(result: dict[str, Any], generator: Optional[Any]) -> None:
+    """Adds result["spoken_text"]. For a grounded answer it condenses the
+    written answer into a spoken reply with a second (cheap) model call; that
+    call only summarises already-grounded text, so it adds no grounding risk,
+    and it falls back to the cleaned full answer if it fails. Short canned
+    replies (declines, guardrails, smalltalk, outages) are just sanitised."""
+    answer = result.get("answer", "")
+    if result.get("grounded"):
+        try:
+            gen = generator or _default_generator()
+            raw = gen.generate(build_voice_messages(result.get("query", ""), answer))
+            spoken = strip_for_speech(strip_thinking(raw))
+            if not spoken:
+                spoken = strip_for_speech(answer)
+        except Exception as exc:  # noqa: BLE001 -- logged; fall back to the cleaned answer
+            logger.warning(f"voice summary generation failed: {exc}")
+            spoken = strip_for_speech(answer)
+    else:
+        # Declines / canned replies: sanitise, and keep it brief when the model
+        # wrote a long decline (the full text still shows on screen).
+        spoken = first_sentences(strip_for_speech(answer), max_words=55)
+    result["spoken_text"] = spoken
+
+
+def _answer_core(
     query: str,
     *,
     limit: int = 6,

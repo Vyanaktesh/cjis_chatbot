@@ -209,3 +209,79 @@ def extract_cited_indices(answer_text: str) -> list[int]:
         if n not in seen:
             seen.append(n)
     return seen
+
+
+# --- Phase 2: grounded voice mode -----------------------------------------
+#
+# The spoken reply is a SHORT summary of the already-grounded written answer,
+# meant to be read aloud. It is produced by a second, cheap model call that
+# summarises the grounded answer (so it adds no new grounding risk -- it can
+# only condense content that retrieval already approved), and then passed
+# through strip_for_speech() as a deterministic safety net.
+VOICE_SYSTEM_PROMPT = """You turn a consular answer into a short spoken reply for a voice assistant to read aloud. You are given an answer that is already correct and complete. Rewrite it for the ear, not the eye.
+
+Rules, no exceptions:
+1. 50 to 70 words. Never more than 90.
+2. Lead with the direct answer in the first sentence.
+3. Include at most one or two of the most important conditions.
+4. Never read a long list aloud. Summarise it, for example "about twenty documents, and the full list is on the screen".
+5. ALWAYS keep any fees, deadlines, and required ("must") conditions exactly as stated. These matter most; never drop them.
+6. If you leave anything out, add the sentence: "See the screen for the full conditions."
+7. Plain spoken sentences only. No bracket markers like [1], no URLs, no markdown symbols, no bullet points.
+8. End with a short offer to help further, such as "Would you like more detail on any part?"
+Output only the spoken reply, nothing else."""
+
+
+def build_voice_messages(query: str, full_answer: str) -> list[dict[str, str]]:
+    """Messages for the condense step: summarise an already-grounded answer into
+    a spoken reply. Operates ONLY on the given answer text, so it cannot
+    introduce ungrounded facts."""
+    user_content = (
+        f"The visitor asked: {query}\n\n"
+        f"Here is the correct written answer:\n\n{full_answer}\n\n"
+        "Rewrite it as a short spoken reply, following the rules exactly."
+    )
+    return [
+        {"role": "system", "content": VOICE_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def first_sentences(text: str, max_words: int = 55) -> str:
+    """Keep whole sentences from the start until the word budget is reached
+    (always keeps at least the first sentence). Used to keep a SPOKEN decline
+    brief when the model wrote a long, rambling one -- the full written answer
+    is unaffected and stays on screen."""
+    sentences = _SENTENCE_SPLIT_RE.split(text.strip())
+    out: list[str] = []
+    count = 0
+    for s in sentences:
+        words = len(s.split())
+        if out and count + words > max_words:
+            break
+        out.append(s)
+        count += words
+    return " ".join(out).strip()
+
+
+_SPEECH_CITATION_RE = re.compile(r"\s*\[\d+\]")
+_SPEECH_URL_RE = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
+_SPEECH_EMPTY_PARENS_RE = re.compile(r"\(\s*\)")
+
+
+def strip_for_speech(text: str) -> str:
+    """Make text safe to read aloud: drop [n] citation markers and URLs, remove
+    markdown and em/en dashes (reusing the existing sanitisers), and collapse
+    newlines/whitespace into single spaces so a TTS engine reads it as one
+    continuous utterance. Deterministic safety net on top of the voice prompt."""
+    text = _SPEECH_CITATION_RE.sub("", text)
+    text = _strip_markdown(text)  # **bold**, "- " bullets, and [label](url) -> label (url)
+    text = _SPEECH_URL_RE.sub("", text)
+    text = _SPEECH_EMPTY_PARENS_RE.sub("", text)  # leftover "()" after a URL was removed
+    text = _strip_dashes(text)
+    text = re.sub(r"[ \t]*\n[ \t]*", " ", text)  # newlines become spaces
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
