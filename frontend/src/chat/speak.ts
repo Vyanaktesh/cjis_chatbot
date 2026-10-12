@@ -15,10 +15,12 @@ export function speechSupported(): boolean {
 }
 
 /** Unlock speech on iOS. Call from inside a user-gesture handler (e.g. the mic
- * tap). Speaks a silent, empty utterance so later speak() calls are permitted. */
+ * tap). Speaks a silent utterance (which also kicks off async voice loading)
+ * so later speak() calls are permitted and have voices ready. */
 export function warmUpSpeech(): void {
   if (!speechSupported()) return;
   try {
+    window.speechSynthesis.getVoices(); // trigger async voice loading
     const u = new SpeechSynthesisUtterance(" ");
     u.volume = 0;
     window.speechSynthesis.speak(u);
@@ -28,22 +30,54 @@ export function warmUpSpeech(): void {
   }
 }
 
+function pickEnglishVoice(): SpeechSynthesisVoice | null {
+  try {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return null;
+    return voices.find((v) => /^en\b/i.test(v.lang)) ?? voices[0];
+  } catch {
+    return null;
+  }
+}
+
 export function speak(text: string, opts: SpeakOptions = {}): void {
   if (!speechSupported() || !text.trim()) {
     opts.onEnd?.();
     return;
   }
-  try {
-    window.speechSynthesis.cancel(); // never overlap utterances
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = opts.rate ?? 1;
-    u.lang = "en-US";
-    u.onend = () => opts.onEnd?.();
-    u.onerror = () => opts.onEnd?.();
-    window.speechSynthesis.speak(u);
-  } catch {
-    opts.onEnd?.();
+
+  const utter = () => {
+    try {
+      window.speechSynthesis.cancel(); // never overlap utterances
+      const u = new SpeechSynthesisUtterance(text);
+      const voice = pickEnglishVoice();
+      if (voice) u.voice = voice;
+      u.rate = opts.rate ?? 1;
+      u.lang = "en-US";
+      u.onend = () => opts.onEnd?.();
+      u.onerror = () => opts.onEnd?.();
+      window.speechSynthesis.speak(u);
+    } catch {
+      opts.onEnd?.();
+    }
+  };
+
+  // Voices load asynchronously; on a fresh page getVoices() can be empty, and
+  // speaking then produces no sound. Wait for them (once), with a short timeout
+  // fallback so we never hang if the event never fires.
+  if (window.speechSynthesis.getVoices().length > 0) {
+    utter();
+    return;
   }
+  let fired = false;
+  const go = () => {
+    if (fired) return;
+    fired = true;
+    window.speechSynthesis.removeEventListener("voiceschanged", go);
+    utter();
+  };
+  window.speechSynthesis.addEventListener("voiceschanged", go);
+  setTimeout(go, 500);
 }
 
 export function stopSpeaking(): void {
