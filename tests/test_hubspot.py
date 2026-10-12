@@ -114,11 +114,17 @@ def citizen(**over):
     return hubspot.create_citizen_submission(**{**args, **over})
 
 
+def _photo(name="photo-abc.png"):
+    """One (bytes, filename, content_type) tuple shaped the way the API hands
+    sanitised files to create_citizen_submission."""
+    return (b"imagebytes", name, "image/png")
+
+
 def test_photo_upload_uses_the_configured_non_indexable_access_level(hs):
     hs.handlers[CONTACTS] = ok({"id": "1"}, 201)
     hs.handlers[FILES] = ok({"id": "f1", "url": "https://files.example/photo.png"})
     hs.handlers[TICKETS] = ok({"id": "700"}, 201)
-    assert citizen(photo_bytes=b"imagebytes", photo_filename="photo-abc.png", photo_content_type="image/png") == "700"
+    assert citizen(photos=[_photo()]) == "700"
     assert b"PUBLIC_NOT_INDEXABLE" in hs.bodies[FILES]
     assert b"PUBLIC_INDEXABLE" not in hs.bodies[FILES].replace(b"PUBLIC_NOT_INDEXABLE", b"")
     assert b"https://files.example/photo.png" in hs.bodies[TICKETS]
@@ -129,5 +135,40 @@ def test_the_uploaded_photo_is_deleted_if_the_ticket_cannot_be_created(hs):
     hs.handlers[FILES] = ok({"id": "f1", "url": "https://files.example/photo.png"})
     hs.handlers[TICKETS] = lambda request: httpx.Response(500, json={"message": "boom"})
     with pytest.raises(hubspot.HubSpotError):
-        citizen(photo_bytes=b"imagebytes", photo_filename="photo-abc.png", photo_content_type="image/png")
+        citizen(photos=[_photo()])
     assert ("DELETE", "/files/v3/files/f1") in hs.calls
+
+
+def test_multiple_photos_upload_each_and_concat_urls_in_the_ticket(hs):
+    hs.handlers[CONTACTS] = ok({"id": "1"}, 201)
+    # One handler, three sequential replies so we can check all three uploads.
+    file_replies = iter([
+        {"id": "f1", "url": "https://files.example/a.png"},
+        {"id": "f2", "url": "https://files.example/b.png"},
+        {"id": "f3", "url": "https://files.example/c.png"},
+    ])
+    hs.handlers[FILES] = lambda request: httpx.Response(200, json=next(file_replies))
+    hs.handlers[TICKETS] = ok({"id": "800"}, 201)
+
+    assert citizen(photos=[_photo("a.png"), _photo("b.png"), _photo("c.png")]) == "800"
+    # All three URLs reach the ticket property, in the order they were uploaded.
+    body = hs.bodies[TICKETS].decode()
+    for url in ("a.png", "b.png", "c.png"):
+        assert url in body
+    assert body.index("a.png") < body.index("b.png") < body.index("c.png")
+
+
+def test_if_the_ticket_fails_all_already_uploaded_photos_are_deleted(hs):
+    hs.handlers[CONTACTS] = ok({"id": "1"}, 201)
+    file_replies = iter([
+        {"id": "f1", "url": "https://files.example/a.png"},
+        {"id": "f2", "url": "https://files.example/b.png"},
+    ])
+    hs.handlers[FILES] = lambda request: httpx.Response(200, json=next(file_replies))
+    hs.handlers[TICKETS] = lambda request: httpx.Response(500, json={"message": "boom"})
+
+    with pytest.raises(hubspot.HubSpotError):
+        citizen(photos=[_photo("a.png"), _photo("b.png")])
+    # Both orphan files are cleaned up, not just one of them.
+    assert ("DELETE", "/files/v3/files/f1") in hs.calls
+    assert ("DELETE", "/files/v3/files/f2") in hs.calls

@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     # (PUBLIC_NOT_INDEXABLE). PRIVATE is stricter (portal users only) but the
     # review team then needs HubSpot's signed links to view them.
     hubspot_photo_access: str = "PUBLIC_NOT_INDEXABLE"
+    # How many files a Citizen Corner submission can carry. Capped so a single
+    # submission can't trigger many HubSpot uploads (each one a separate API
+    # call and a separate file to store/moderate). Each file is still bounded
+    # by _MAX_PHOTO_BYTES in app/api/main.py.
+    max_citizen_photos: int = 5
 
     # --- Speech-to-text (self-hosted whisper.cpp via pywhispercpp) ---
     # Model size downloaded/loaded on first use. "base.en" is a good

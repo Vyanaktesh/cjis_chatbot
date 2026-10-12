@@ -324,7 +324,7 @@ export type CitizenSubmissionInput = {
   content: string;
   submissionType: CitizenSubmissionType;
   anonymous: boolean;
-  photo?: File;
+  photos?: File[];
 };
 
 /** POSTs to app/api/main.py's /citizen-corner/submit -- multipart/form-data
@@ -342,7 +342,11 @@ export async function submitCitizenCorner(
   form.set("content", input.content);
   form.set("submission_type", input.submissionType);
   form.set("anonymous", String(input.anonymous));
-  if (input.photo) form.set("photo", input.photo);
+  // Each photo is appended under the same field name "photos" -- that's how
+  // the backend reads list[UploadFile] (see app/api/main.py's submit endpoint).
+  for (const file of input.photos ?? []) {
+    form.append("photos", file, file.name);
+  }
 
   const res = await fetchWithTimeout(
     `${API_BASE}/citizen-corner/submit`,

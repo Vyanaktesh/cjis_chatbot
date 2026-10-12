@@ -33,6 +33,9 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 // immediately rather than after a round trip to the server.
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+// Mirrors Settings.max_citizen_photos in app/core/config.py. Caps the UI so a
+// citizen gets an immediate error instead of a 422 from the server.
+const MAX_PHOTOS = 5;
 
 const inputClass =
   "w-full rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-3 py-2 text-base sm:text-[13.5px] text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)]";
@@ -62,7 +65,7 @@ export function CitizenCornerForm({
   const [submissionType, setSubmissionType] =
     useState<CitizenSubmissionType | null>(null);
   const [anonymous, setAnonymous] = useState(false);
-  const [photo, setPhoto] = useState<File | null>(null);
+  const [photos, setPhotos] = useState<File[]>([]);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,24 +80,35 @@ export function CitizenCornerForm({
     submissionType &&
     !photoError;
 
-  function handlePhotoChange(file: File | undefined) {
-    if (!file) {
-      setPhoto(null);
-      setPhotoError(null);
-      return;
+  function addPhotos(incoming: FileList | File[] | null) {
+    if (!incoming) return;
+    const incomingArr = Array.from(incoming);
+    const errors: string[] = [];
+    const next = [...photos];
+    for (const file of incomingArr) {
+      if (next.length >= MAX_PHOTOS) {
+        errors.push(`You can attach up to ${MAX_PHOTOS} photos.`);
+        break;
+      }
+      if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
+        errors.push(`${file.name}: must be a JPEG, PNG, WEBP, or GIF image.`);
+        continue;
+      }
+      if (file.size > MAX_PHOTO_BYTES) {
+        errors.push(`${file.name}: must be under 8MB.`);
+        continue;
+      }
+      next.push(file);
     }
-    if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
-      setPhoto(null);
-      setPhotoError("Photo must be a JPEG, PNG, WEBP, or GIF image.");
-      return;
-    }
-    if (file.size > MAX_PHOTO_BYTES) {
-      setPhoto(null);
-      setPhotoError("Photo must be under 8MB.");
-      return;
-    }
+    setPhotos(next);
+    setPhotoError(errors[0] ?? null);
+    // Reset the hidden input so re-selecting the same file still fires change.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removePhoto(index: number) {
+    setPhotos((prev) => prev.filter((_, i) => i !== index));
     setPhotoError(null);
-    setPhoto(file);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -110,7 +124,7 @@ export function CitizenCornerForm({
         content: content.trim(),
         submissionType,
         anonymous,
-        photo: photo ?? undefined,
+        photos: photos.length ? photos : undefined,
       });
       onSubmitted(ticketId);
     } catch (err) {
@@ -226,33 +240,45 @@ export function CitizenCornerForm({
           ref={fileInputRef}
           type="file"
           accept={ALLOWED_PHOTO_TYPES.join(",")}
+          multiple
           className="hidden"
-          onChange={(e) => handlePhotoChange(e.target.files?.[0])}
+          onChange={(e) => addPhotos(e.target.files)}
         />
-        {!photo && (
+        {photos.length < MAX_PHOTOS && (
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="flex shrink-0 items-center gap-1 rounded-full border border-[var(--cc-border)] px-2.5 py-1 text-xs font-medium text-[var(--cc-text-soft)] transition-colors hover:bg-[var(--cc-surface-2)]"
           >
             <Paperclip className="h-3.5 w-3.5" />
-            Attach photo
+            {photos.length ? "Add another" : "Attach photos"}
           </button>
         )}
       </div>
 
-      {photo && (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)]">
-          <span className="truncate">{photo.name}</span>
-          <button
-            type="button"
-            onClick={() => handlePhotoChange(undefined)}
-            aria-label="Remove photo"
-            className="ml-auto shrink-0 text-[var(--cc-text-faint)] transition-colors hover:text-[var(--cc-text)]"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
+      {photos.length > 0 && (
+        <ul className="space-y-1.5">
+          {photos.map((file, i) => (
+            <li
+              key={`${file.name}-${i}`}
+              className="flex items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)]"
+            >
+              <Paperclip className="h-3.5 w-3.5 shrink-0 text-[var(--cc-text-faint)]" />
+              <span className="truncate">{file.name}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-[var(--cc-text-faint)]">
+                {(file.size / (1024 * 1024)).toFixed(1)}MB
+              </span>
+              <button
+                type="button"
+                onClick={() => removePhoto(i)}
+                aria-label={`Remove ${file.name}`}
+                className="shrink-0 text-[var(--cc-text-faint)] transition-colors hover:text-[var(--cc-text)]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
       {photoError && (
         <p className="rounded-lg bg-red-500/10 px-2.5 py-1.5 text-xs text-red-600">

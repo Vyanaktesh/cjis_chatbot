@@ -482,12 +482,15 @@ async def submit_citizen_corner(
     content: str = Form(..., max_length=5000),
     submission_type: str = Form(..., max_length=30),
     anonymous: bool = Form(False),
-    photo: Optional[UploadFile] = File(None),
+    photos: list[UploadFile] = File(default=[]),
 ):
     """
-    A citizen may share a testimonial, feedback, or photo at any point,
-    independent of the Q&A/escalation flow above (FR-5.1). Nothing here
-    is published directly -- see app/integrations/hubspot.py's
+    A citizen may share a testimonial, feedback, experience, or one or more
+    photos at any point, independent of the Q&A/escalation flow above
+    (FR-5.1). Up to settings.max_citizen_photos files per submission; each
+    sanitised and uploaded to HubSpot separately, and the resulting URLs are
+    stored on the ticket's photo_url property, newline-separated. Nothing
+    here is published directly -- see app/integrations/hubspot.py's
     create_citizen_submission for how this lands in HubSpot's moderation
     queue (FR-5.3), and that module's HubSpotError message for what still
     needs setting up there before this endpoint works end-to-end.
@@ -507,38 +510,49 @@ async def submit_citizen_corner(
             detail=f"submission_type must be one of: {allowed}.",
         )
 
-    photo_bytes = None
-    photo_filename = None
-    photo_content_type = None
-    if photo is not None and photo.filename:
+    # Browsers can send an empty multipart part when no file is attached
+    # (filename=""); treat those as "no photo".
+    real_photos = [p for p in photos if p is not None and p.filename]
+    if len(real_photos) > settings.max_citizen_photos:
+        raise HTTPException(
+            status_code=422,
+            detail=f"You can attach up to {settings.max_citizen_photos} photos.",
+        )
+
+    sanitized: list[tuple[bytes, str, Optional[str]]] = []
+    for photo in real_photos:
         if photo.content_type not in _ALLOWED_PHOTO_CONTENT_TYPES:
-            raise HTTPException(status_code=422, detail="Photo must be a JPEG, PNG, WEBP, or GIF image.")
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{photo.filename}' must be a JPEG, PNG, WEBP, or GIF image.",
+            )
         # Reject oversized uploads BEFORE buffering the whole file into
         # memory. Starlette populates UploadFile.size from the multipart
         # part headers when present; without this guard a malicious large
         # upload would be fully read into RAM only to be rejected below.
         if photo.size is not None and photo.size > _MAX_PHOTO_BYTES:
-            raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
-        raw_photo = await photo.read()
-        if len(raw_photo) > _MAX_PHOTO_BYTES:  # fallback when .size was unset
-            raise HTTPException(status_code=422, detail="Photo must be under 8MB.")
+            raise HTTPException(status_code=422, detail=f"'{photo.filename}' must be under 8MB.")
+        raw = await photo.read()
+        if len(raw) > _MAX_PHOTO_BYTES:  # fallback when .size was unset
+            raise HTTPException(status_code=422, detail=f"'{photo.filename}' must be under 8MB.")
         # The declared content type and filename come from the visitor's
         # browser and prove nothing. Decode the bytes as a real image,
         # strip location/camera metadata, and use a generated filename.
         try:
-            photo_bytes, photo_content_type, photo_filename = await run_in_threadpool(sanitize_image, raw_photo)
+            clean_bytes, clean_ct, clean_name = await run_in_threadpool(sanitize_image, raw)
         except ImageRejected:
             raise HTTPException(
                 status_code=422,
-                detail="That file doesn't look like a valid image. Please use a JPEG, PNG, WEBP, or GIF photo.",
+                detail=f"'{photo.filename}' doesn't look like a valid image. Please use JPEG, PNG, WEBP, or GIF.",
             ) from None
+        sanitized.append((clean_bytes, clean_name, clean_ct))
 
     try:
-        # hubspot.* makes blocking HTTP calls (up to three in a row). This
-        # handler is `async` only because of `await photo.read()` above, so
-        # the blocking call must be pushed to a worker thread -- run directly
-        # it freezes the event loop and stalls every other request (chat,
-        # health checks) for the whole HubSpot round trip.
+        # hubspot.* makes blocking HTTP calls (up to three in a row, plus one
+        # per uploaded photo). This handler is `async` only because of
+        # `await photo.read()` above, so the blocking call must be pushed to
+        # a worker thread -- run directly it freezes the event loop and stalls
+        # every other request (chat, health checks) for the whole round trip.
         ticket_id = await run_in_threadpool(
             hubspot.create_citizen_submission,
             name=name,
@@ -547,9 +561,7 @@ async def submit_citizen_corner(
             content=content,
             anonymous=anonymous,
             submission_type=submission_type,
-            photo_bytes=photo_bytes,
-            photo_filename=photo_filename,
-            photo_content_type=photo_content_type,
+            photos=sanitized or None,
         )
     except hubspot.HubSpotError as exc:
         logger.warning(f"Citizen Corner submission failed: {exc}")

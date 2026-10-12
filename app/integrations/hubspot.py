@@ -266,7 +266,7 @@ def _create_citizen_ticket(
     content: str,
     anonymous: bool,
     submission_type: str,
-    photo_url: Optional[str],
+    photo_urls: list[str],
 ) -> str:
     settings = get_settings()
     if not settings.hubspot_citizen_pipeline_id or not settings.hubspot_citizen_stage_pending_id:
@@ -297,8 +297,12 @@ def _create_citizen_ticket(
         "is_anonumous": "true" if anonymous else "false",
         "submission_type": submission_type,
     }
-    if photo_url:
-        properties["photo_url"] = photo_url
+    if photo_urls:
+        # The custom property is a single-line text field; multiple uploaded
+        # files are stored as newline-separated URLs so each is clickable in
+        # HubSpot's ticket view. Backward-compatible with the earlier
+        # single-photo era: a one-element list ends up as just that one URL.
+        properties["photo_url"] = "\n".join(photo_urls)
     body = _post(
         client,
         "/crm/v3/objects/tickets",
@@ -336,9 +340,7 @@ def create_citizen_submission(
     content: str,
     anonymous: bool,
     submission_type: str,
-    photo_bytes: Optional[bytes] = None,
-    photo_filename: Optional[str] = None,
-    photo_content_type: Optional[str] = None,
+    photos: Optional[list[tuple[bytes, str, Optional[str]]]] = None,
 ) -> str:
     """Citizen Corner (PRD FR-5.1-5.8): finds or creates the Contact,
     optionally uploads a photo, creates a Ticket in the dedicated Citizen
@@ -354,22 +356,28 @@ def create_citizen_submission(
     any failure, including the pipeline/properties not being set up yet --
     caller decides how to surface that to the citizen. If the photo was
     already uploaded when a later step fails, it is deleted again."""
-    key = ("citizen", email.strip().lower(), title.strip(), content.strip(), submission_type, bool(photo_bytes))
+    # The dedupe key includes the count of attached files so a resubmission
+    # with a different number of photos (user added or removed one before
+    # pressing Submit again) is treated as a new submission, not a retry.
+    photos = photos or []
+    key = (
+        "citizen", email.strip().lower(), title.strip(), content.strip(),
+        submission_type, len(photos),
+    )
     already = _recent_get(key)
     if already:
         return already
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
         contact_id = _find_or_create_contact(client, email=email, name=name)
-        photo_url = None
-        file_id = None
-        if photo_bytes and photo_filename:
-            file_id, photo_url = _upload_file(
-                client,
-                filename=photo_filename,
-                content=photo_bytes,
-                content_type=photo_content_type,
-            )
+        uploaded_ids: list[str] = []
+        photo_urls: list[str] = []
         try:
+            for raw, filename, ctype in photos:
+                file_id, url = _upload_file(
+                    client, filename=filename, content=raw, content_type=ctype
+                )
+                uploaded_ids.append(file_id)
+                photo_urls.append(url)
             ticket_id = _create_citizen_ticket(
                 client,
                 contact_id=contact_id,
@@ -377,10 +385,12 @@ def create_citizen_submission(
                 content=content,
                 anonymous=anonymous,
                 submission_type=submission_type,
-                photo_url=photo_url,
+                photo_urls=photo_urls,
             )
         except Exception:
-            if file_id:
+            # Any failure after one or more uploads succeeded would otherwise
+            # leave orphan files in the portal; clean them all up.
+            for file_id in uploaded_ids:
                 _delete_file(client, file_id)
             raise
     _recent_put(key, ticket_id)
