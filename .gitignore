@@ -37,3 +37,12 @@ skills-lock.json
 
 # stray git identity/signing config from an unrelated environment
 .gitconfig
+
+# Vertex service-account JSON (never commit)
+secrets/
+
+# Local data dumps / backups for server transfer (never commit)
+/backup_postgres.sql
+/qdrant_storage.tar.gz
+*.tar.gz
+/gemini_line.txt

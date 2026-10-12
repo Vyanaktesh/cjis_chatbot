@@ -22,3 +22,6 @@ frontend
 .claude
 .cache
 .config
+
+# secrets are mounted at runtime, never baked into the image
+secrets/
