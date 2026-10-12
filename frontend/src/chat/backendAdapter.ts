@@ -139,7 +139,19 @@ export type ChatResponse = {
   // human escalation -- there's nothing for the consulate to follow up on.
   smalltalk?: boolean;
   guardrail?: string;
+  // Present only when the question was asked by voice (mode="voice"): a short
+  // summary of the answer to read aloud. See app/generation/service.py.
+  spoken_text?: string;
 };
+
+// Set by the mic (markNextQuestionAsVoice) so the NEXT /chat call asks the
+// backend for a spoken summary and the widget knows to auto-play it. Reset
+// after one use, so typed questions stay text-only.
+let pendingVoiceQuestion = false;
+
+export function markNextQuestionAsVoice(): void {
+  pendingVoiceQuestion = true;
+}
 
 /**
  * Factory rather than a plain object so App.tsx can pass an `onResult`
@@ -182,6 +194,8 @@ export function createBackendAdapter(
       try {
         let res: Response;
         try {
+          const mode = pendingVoiceQuestion ? "voice" : "text";
+          pendingVoiceQuestion = false;
           res = await fetch(`${API_BASE}/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -190,6 +204,7 @@ export function createBackendAdapter(
               message: query,
               session_id: sessionId ?? undefined,
               history,
+              mode,
             }),
             signal: controller.signal,
           });

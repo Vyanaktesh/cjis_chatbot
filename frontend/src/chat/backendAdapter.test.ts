@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBackendAdapter, type ChatResponse } from "./backendAdapter";
+import {
+  createBackendAdapter,
+  markNextQuestionAsVoice,
+  type ChatResponse,
+} from "./backendAdapter";
 
 type RunArgs = Parameters<ReturnType<typeof createBackendAdapter>["run"]>[0];
 
@@ -104,6 +108,25 @@ describe("backendAdapter.run", () => {
     const pending = failure(run());
     await vi.advanceTimersByTimeAsync(90_000);
     expect(String(await pending)).toContain("taking longer than expected");
+  });
+
+  const bodyOf = (call: number) =>
+    JSON.parse((fetchMock().mock.calls[call][1] as RequestInit).body as string);
+
+  it("asks for text mode by default", async () => {
+    fetchMock().mockResolvedValue(jsonResponse(ok()));
+    await run();
+    expect(bodyOf(0).mode).toBe("text");
+  });
+
+  it("asks for voice mode once after the mic marks a question, then reverts", async () => {
+    // Fresh Response per call -- a body can only be read once.
+    fetchMock().mockImplementation(() => Promise.resolve(jsonResponse(ok({ spoken_text: "Renew online." }))));
+    markNextQuestionAsVoice();
+    await run();
+    await run();
+    expect(bodyOf(0).mode).toBe("voice");
+    expect(bodyOf(1).mode).toBe("text"); // one-shot: typed questions stay text
   });
 
   it("lets a user cancel through without turning it into an error message", async () => {

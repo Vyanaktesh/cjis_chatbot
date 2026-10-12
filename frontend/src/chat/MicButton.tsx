@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Mic, Square } from "lucide-react";
 import { unstable_useComposerInput } from "@assistant-ui/react";
-import { transcribeAudio } from "./backendAdapter";
+import { markNextQuestionAsVoice, transcribeAudio } from "./backendAdapter";
+import { warmUpSpeech } from "./speak";
 
 /** Mic button for the composer: records with the browser's MediaRecorder,
  * sends the audio to the self-hosted /transcribe endpoint, and writes the
@@ -43,6 +44,9 @@ export function MicButton() {
 
   async function start() {
     setError(null);
+    // This runs inside the user's tap (a gesture), which is the moment iOS
+    // allows us to unlock speech for later auto-play of the spoken answer.
+    warmUpSpeech();
     if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       // The usual cause on a phone demo: the site is open over plain http on a
       // LAN IP, which is not a secure context, so the mic API is unavailable.
@@ -101,6 +105,9 @@ export function MicButton() {
         const existing = composer.value;
         const joiner = existing && !existing.endsWith(" ") ? " " : "";
         composer.setText(existing + joiner + text);
+        // The question came from the mic: the next send should request a spoken
+        // answer and auto-play it (see backendAdapter + ChatWidget).
+        markNextQuestionAsVoice();
       } else {
         setError("Didn't catch that. Please try again.");
       }

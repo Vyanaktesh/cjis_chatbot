@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -14,13 +14,16 @@ import {
   Minimize2,
   Moon,
   Send,
+  Square,
   Sun,
+  Volume2,
   X,
 } from "lucide-react";
 import type { ChatResponse } from "./backendAdapter";
 import { playSend } from "./sound";
 import { safeUrl } from "./safeUrl";
 import { MicButton } from "./MicButton";
+import { cleanForSpeech, speak, stopSpeaking } from "./speak";
 import consulateLogo from "../assets/consulate-logo.jpg";
 import { SupportTicketForm } from "./SupportTicketForm";
 import { CitizenCornerForm } from "./CitizenCornerForm";
@@ -523,6 +526,64 @@ type Flow =
   | "ticketSuccess";
 type CitizenFlow = "hidden" | "form" | "success";
 
+/** Controls for the spoken answer (voice mode). Appears only when the backend
+ * returned a spoken_text (i.e. the question came from the mic). The full written
+ * answer and citation chips stay in the thread above regardless. */
+function VoiceBar({
+  speaking,
+  rate,
+  onRate,
+  onStop,
+  onReplay,
+  onFull,
+}: {
+  speaking: boolean;
+  rate: number;
+  onRate: (r: number) => void;
+  onStop: () => void;
+  onReplay: () => void;
+  onFull: () => void;
+}) {
+  const btn =
+    "rounded-full border border-[var(--cc-border)] px-2.5 py-1 font-medium text-[var(--cc-text-soft)] transition-colors hover:border-[var(--cc-accent)] hover:text-[var(--cc-accent-text)]";
+  return (
+    <div className="flex items-center gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface-2)] px-3 py-2 text-xs">
+      <span className="flex shrink-0 items-center gap-1.5 font-semibold text-[var(--cc-text-soft)]">
+        <Volume2
+          className={`h-4 w-4 ${speaking ? "animate-pulse text-[var(--cc-accent)]" : ""}`}
+        />
+        {speaking ? "Speaking" : "Voice answer"}
+      </span>
+      {speaking ? (
+        <button type="button" onClick={onStop} className={`${btn} flex items-center gap-1`}>
+          <Square className="h-3 w-3" />
+          Stop
+        </button>
+      ) : (
+        <button type="button" onClick={onReplay} className={btn}>
+          Replay
+        </button>
+      )}
+      <button type="button" onClick={onFull} className={btn}>
+        Full answer
+      </button>
+      <label className="ml-auto flex shrink-0 items-center gap-1 text-[var(--cc-text-faint)]">
+        Speed
+        <select
+          value={rate}
+          onChange={(e) => onRate(Number(e.target.value))}
+          className="rounded-md border border-[var(--cc-border)] bg-[var(--cc-surface)] px-1 py-0.5 text-[var(--cc-text)] outline-none"
+        >
+          <option value={0.9}>0.9x</option>
+          <option value={1}>1x</option>
+          <option value={1.25}>1.25x</option>
+          <option value={1.5}>1.5x</option>
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function ChatPanel({
   onClose,
   lastResult,
@@ -539,6 +600,34 @@ function ChatPanel({
   const [seenResult, setSeenResult] = useState<ChatResponse | null>(null);
   const [citizenFlow, setCitizenFlow] = useState<CitizenFlow>("hidden");
   const [citizenReference, setCitizenReference] = useState<string | null>(null);
+
+  // --- Voice output (spoken answers) ---
+  const [speaking, setSpeaking] = useState(false);
+  const [rate, setRateState] = useState(1);
+  const rateRef = useRef(1);
+  const setRate = (r: number) => {
+    rateRef.current = r;
+    setRateState(r);
+  };
+  const spokenRef = useRef<ChatResponse | null>(null);
+
+  const say = (text: string) => {
+    setSpeaking(true);
+    speak(text, { rate: rateRef.current, onEnd: () => setSpeaking(false) });
+  };
+
+  // Auto-play the spoken summary when a voice answer arrives (spoken_text is
+  // only present for mic-originated questions -- see backendAdapter).
+  useEffect(() => {
+    if (lastResult && lastResult !== spokenRef.current && lastResult.spoken_text) {
+      spokenRef.current = lastResult;
+      say(lastResult.spoken_text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastResult]);
+
+  // Stop any speech when the panel unmounts (closed / conversation reset).
+  useEffect(() => () => stopSpeaking(), []);
 
   // A new question was asked: drop the previous answer's follow-up prompt
   // ("Did this answer your question?" etc.). Otherwise, if the new request
@@ -699,6 +788,19 @@ function ChatPanel({
             <CitizenSuccessMessage referenceNumber={citizenReference} />
           )}
         </ThreadPrimitive.Viewport>
+        {lastResult?.spoken_text && (
+          <VoiceBar
+            speaking={speaking}
+            rate={rate}
+            onRate={setRate}
+            onStop={() => {
+              stopSpeaking();
+              setSpeaking(false);
+            }}
+            onReplay={() => say(lastResult.spoken_text!)}
+            onFull={() => say(cleanForSpeech(lastResult.answer))}
+          />
+        )}
         <QuickActionsBar onCitizenCorner={openCitizenCorner} />
         <Composer />
       </ThreadPrimitive.Root>
