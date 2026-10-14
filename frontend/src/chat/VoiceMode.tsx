@@ -313,7 +313,7 @@ export function VoiceMode({
       aria-label="Voice conversation"
     >
       {/* Top bar */}
-      <div className="flex items-center justify-between px-3 pt-3">
+      <div className="flex items-center px-3 pt-3">
         <button
           type="button"
           onClick={exit}
@@ -323,10 +323,6 @@ export function VoiceMode({
           <ArrowLeft className="h-4 w-4" />
           Back to chat
         </button>
-        <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-white/80">
-          <span className={`h-1.5 w-1.5 rounded-full ${phase === "listening" ? "bg-red-400 animate-pulse" : "bg-emerald-400"}`} />
-          Voice
-        </span>
       </div>
 
       {/* Orb + status */}
