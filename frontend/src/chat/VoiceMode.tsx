@@ -351,16 +351,14 @@ export function VoiceMode({
         )}
         {error && <p className="mt-1 max-w-[18rem] text-center text-[13px] leading-snug text-white/75">{error}</p>}
 
-        {/* Captions */}
-        <div className="mt-3 w-full max-w-[20rem] space-y-2 text-center">
+        {/* Caption: what the visitor asked. The answer is only spoken here;
+            the written answer is in the chat. */}
+        <div className="mt-3 w-full max-w-[20rem] text-center">
           {heard && (
             <p className="text-[13px] leading-snug text-white/60">
               <span className="font-semibold text-white/80">You: </span>
               {heard}
             </p>
-          )}
-          {reply && (phase === "speaking" || phase === "idle") && (
-            <p className="consulate-scroll max-h-24 overflow-y-auto text-[14px] leading-relaxed text-white/90">{reply}</p>
           )}
         </div>
         {reply && phase === "idle" && (
