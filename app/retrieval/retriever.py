@@ -140,6 +140,44 @@ def pinned_chunks(urls: list[str], client=None) -> list[dict[str, Any]]:
     return [_point_to_result(SimpleNamespace(id=p.id, score=None, payload=p.payload), 0) for p in points]
 
 
+def fuse_results(
+    ranked_lists: list[list[dict[str, Any]]],
+    weights: list[float],
+    *,
+    limit: int,
+    keep_top: int = 0,
+    k: int = 60,
+) -> list[dict[str, Any]]:
+    """Weighted reciprocal-rank fusion of several search() result lists (for
+    one question searched with different wordings, see
+    app/retrieval/query_rewrite.py). Each chunk scores sum(weight / (k + rank))
+    over the lists it appears in, so a chunk ranked well by both wordings
+    beats one only a single wording found. Rank-based on purpose: the lists'
+    own scores come from different queries and aren't comparable.
+
+    `keep_top`: each list's top N always make the cut. Fusion rewards
+    agreement, which has a blind spot: when the lists share many middling
+    results, those outscore what only one wording ranked first. Seen on "my
+    passport expires next year... how long does re-issue take?": the rewrite
+    ranked the processing-time page 1st to 3rd, yet the fused top 8 was all
+    re-issue checklists that both wordings ranked lower.
+
+    Returns new dicts with `rank` and `score` set to the fused order."""
+    fused: dict[str, float] = {}
+    first_seen: dict[str, dict[str, Any]] = {}
+    for results, weight in zip(ranked_lists, weights):
+        for position, result in enumerate(results, start=1):
+            cid = result["chunk_id"]
+            fused[cid] = fused.get(cid, 0.0) + weight / (k + position)
+            first_seen.setdefault(cid, result)
+    ranked = sorted(fused, key=fused.get, reverse=True)
+    reserved = list(dict.fromkeys(r["chunk_id"] for results in ranked_lists for r in results[:keep_top]))[:limit]
+    others = [cid for cid in ranked if cid not in set(reserved)][: limit - len(reserved)]
+    chosen = set(reserved) | set(others)
+    order = [cid for cid in ranked if cid in chosen]
+    return [{**first_seen[cid], "rank": i, "score": fused[cid]} for i, cid in enumerate(order, start=1)]
+
+
 def search(
     query: str,
     *,

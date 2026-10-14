@@ -46,7 +46,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -56,6 +56,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
 
+from app.core.chat_logging import record_chat
 from app.core.config import get_settings, production_config_problems
 from app.core.logging_config import configure_logging, get_logger
 from app.db.connection import get_conn
@@ -314,7 +315,7 @@ def generate(request: Request, body: GenerateRequest):
     limit = max(1, min(body.limit, 20))
     history = [h.model_dump() for h in body.history] if body.history else None
     try:
-        return answer_question(
+        result = answer_question(
             body.query,
             limit=limit,
             service_category=body.service_category,
@@ -324,6 +325,8 @@ def generate(request: Request, body: GenerateRequest):
             applicant_variant=body.applicant_variant,
             history=history,
         )
+        result.pop("rewritten_query", None)  # internal, for the chat log
+        return result
     except Exception as exc:  # noqa: BLE001 -- last-resort guard, logged below
         logger.exception("generate pipeline failed")
         # The exception text stays in the log. It used to be returned to the
@@ -355,7 +358,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 @limiter.limit(settings.rate_limit_generate)
-def chat(request: Request, body: ChatRequest):
+def chat(request: Request, body: ChatRequest, background_tasks: BackgroundTasks):
     """
     Phase 8: frontend-facing chat endpoint. Thin wrapper over the same
     answer_question() pipeline as /generate, shaped for the React widget:
@@ -371,7 +374,21 @@ def chat(request: Request, body: ChatRequest):
     """
     session_id = body.session_id or str(uuid.uuid4())
     history = [h.model_dump() for h in body.history] if body.history else None
+    started = time.perf_counter()
     result = _answer_or_degrade(body.message, history, mode=body.mode)
+    rewritten = result.pop("rewritten_query", None)
+    # Stored after the reply is sent, with personal details masked (see
+    # app/core/chat_logging.py); a logging failure never affects the reply.
+    background_tasks.add_task(
+        record_chat,
+        question=body.message,
+        result=result,
+        session_id=session_id,
+        mode=body.mode,
+        is_followup=bool(history),
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        search_query=rewritten,
+    )
     return {"session_id": session_id, **result}
 
 

@@ -170,6 +170,37 @@ class Settings(BaseSettings):
     # website could only be declined, because those pages rarely rank for them.
     # Comma separated; empty disables it.
     retrieval_pinned_source_urls: str = "https://indiainatlanta.gov.in/eoial_pages/MzIy"
+    # Query rewriting (app/retrieval/query_rewrite.py): before searching, the
+    # model turns a chatty message ("my son is 7 and his passport was lost at
+    # Disney World...") into a short search query ("lost Indian passport
+    # re-issue minor child"), and the search uses both. Gemini backend only.
+    # On a timeout the search uses the original text alone.
+    query_rewrite_enabled: bool = True
+    query_rewrite_timeout_seconds: float = 3.0
+    # How much the rewritten query's ranking counts against the original
+    # message's when the two result lists are fused (see
+    # retriever.fuse_results). Equal on purpose: the two rankings then
+    # interleave, so the original's top results always survive (its top 4 are
+    # in a fused top 8) however poor the rewrite. Above 1, every result the
+    # rewrite ranks in its top ~30 outscores anything only the original found:
+    # at 1.5, "I lost my OCI card" lost the Consulate's e-OCI page (the
+    # original's #1) to a rewrite that drifted to fees and documents.
+    # Measured Oct 2026 on 32 questions asked plainly and with real-life detail
+    # (64 in all): the right source came first for 41 searching with the
+    # original alone, 49 fused at 1.0, 50 at 1.5; it reached the top 8 for all
+    # 64 fused, 62 without.
+    retrieval_rewrite_weight: float = 1.0
+    # The top N results of each wording always reach the answer, whatever the
+    # fused scores say (see retriever.fuse_results' keep_top). Costs nothing
+    # on the measurements above and closes fusion's blind spot for a page only
+    # one wording ranks first.
+    retrieval_fusion_keep_top: int = 2
+
+    # --- Chat logging (app/core/chat_logging.py, table chat_logs) ---
+    # Each question and answer is stored with personal details masked and no IP
+    # address, and deleted after this many days.
+    chat_log_enabled: bool = True
+    chat_log_retention_days: int = 60
 
     # --- Generation (Phase 7) ---
     # Self-hosted, CPU-only GGUF model via llama.cpp — no third-party API.
