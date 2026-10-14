@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -8,25 +8,26 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import {
+  ChevronDown,
   ExternalLink,
   Heart,
   Maximize2,
   Minimize2,
+  AudioLines,
   Moon,
-  Play,
   Send,
-  Square,
   Sun,
   X,
 } from "lucide-react";
 import type { ChatResponse } from "./backendAdapter";
 import { playSend } from "./sound";
 import { safeUrl } from "./safeUrl";
-import { MicButton } from "./MicButton";
-import { cleanForSpeech, speak, stopSpeaking } from "./speak";
+import { VoiceMode } from "./VoiceMode";
+import { warmUpSpeech } from "./speak";
 import consulateLogo from "../assets/consulate-logo.jpg";
 import { SupportTicketForm } from "./SupportTicketForm";
 import { CitizenCornerForm } from "./CitizenCornerForm";
+import { lastRealQuestion } from "./ticketQuestion";
 
 const BOT_NAME = "DOST";
 const BOT_TAGLINE = "Kahin Bhi, Kabhi Bhi";
@@ -147,11 +148,14 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
   const url = safeUrl(rawUrl);
   if (!url) return null;
 
-  const match = title?.match(/^\[(\d+)\]\s*(\S+)/);
+  // title is "[1] OCI <source title>" (see backendAdapter); older replies and a
+  // failed title lookup carry "[1] OCI source", so fall back to the URL label.
+  const match = title?.match(/^\[(\d+)\]\s*(\S+)\s*(.*)$/);
   const index = match?.[1];
   const category = match?.[2];
+  const sourceName = match?.[3]?.trim();
 
-  const label = sourceLabel(url);
+  const label = sourceName && sourceName !== "source" ? sourceName : sourceLabel(url);
 
   return (
     <a
@@ -159,7 +163,7 @@ function SourceChip({ url: rawUrl, title }: { url?: string; title?: string }) {
       target="_blank"
       rel="noreferrer"
       className="group flex w-fit min-w-0 max-w-[15rem] items-center gap-2 rounded-lg border border-[var(--cc-border)] bg-[var(--cc-surface)] px-2.5 py-1.5 text-xs text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:border-[var(--cc-accent)]"
-      title={`${category ? `${category} · ` : ""}${url}`}
+      title={`${category ? `${category} · ` : ""}${label}\n${url}`}
     >
       {index && (
         <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--cc-accent)] text-[10px] font-semibold text-[var(--cc-accent-ink)]">
@@ -213,6 +217,97 @@ function renderWithCitations(text: string): ReactNode[] {
   return nodes;
 }
 
+// Short answers end with this line (app/generation/prompt.py MORE_DETAILS_OFFER).
+// On the latest answer it becomes a button that asks for the full answer; the
+// backend recognises the button's text as accepting the offer
+// (MORE_DETAILS_BUTTON_TEXT). Typing "yes" works the same way.
+const MORE_DETAILS_OFFER = "Would you like more details on this?";
+const MORE_DETAILS_PROMPT = "Yes, more details please";
+
+function splitOffer(text: string): { body: string; hasOffer: boolean } {
+  const trimmed = text.trimEnd();
+  if (!trimmed.endsWith(MORE_DETAILS_OFFER)) return { body: text, hasOffer: false };
+  return { body: trimmed.slice(0, -MORE_DETAILS_OFFER.length).trimEnd(), hasOffer: true };
+}
+
+/** Answers arrive as plain text with "- " bullet lines (the backend keeps it
+ * that way for voice, copy and conversation history). Here consecutive bullet
+ * lines become a real list with round dots and a hanging indent, so a wrapped
+ * line lines up under the text rather than under the dot. */
+function renderBody(body: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let items: string[] = [];
+  let lines: string[] = [];
+  let key = 0;
+
+  const flushItems = () => {
+    if (!items.length) return;
+    nodes.push(
+      <ul key={`ul-${key++}`} className="my-1 list-disc space-y-1.5 pl-5 marker:text-[var(--cc-accent)]">
+        {items.map((item, i) => (
+          <li key={i} className="pl-0.5">
+            {renderWithCitations(item)}
+          </li>
+        ))}
+      </ul>,
+    );
+    items = [];
+  };
+  const flushLines = () => {
+    const text = lines.join("\n").trim();
+    if (text) {
+      nodes.push(
+        <span key={`p-${key++}`} className="block whitespace-pre-wrap">
+          {renderWithCitations(text)}
+        </span>,
+      );
+    }
+    lines = [];
+  };
+
+  for (const line of body.split("\n")) {
+    const bullet = line.match(/^\s*[-•*]\s+(.*)$/);
+    if (bullet) {
+      flushLines();
+      items.push(bullet[1]);
+    } else {
+      flushItems();
+      lines.push(line);
+    }
+  }
+  flushItems();
+  flushLines();
+  return nodes;
+}
+
+function AnswerText({ text }: { text: string }) {
+  const { body, hasOffer } = splitOffer(text);
+  return (
+    <>
+      <div>{renderBody(body)}</div>
+      {hasOffer && (
+        <>
+          {/* Only the newest answer shows the offer. Once anything has been
+              asked after it (including clicking it), the line disappears: on
+              an older answer it would expand whatever was asked last, not that
+              answer's topic, and a leftover line read as if it were still
+              being offered. */}
+          <MessagePrimitive.If last>
+            <ThreadPrimitive.Suggestion
+              prompt={MORE_DETAILS_PROMPT}
+              send
+              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--cc-border)] bg-[var(--cc-surface)] px-3 py-2 text-[13px] font-medium text-[var(--cc-accent-text)] transition-colors duration-150 hover:border-[var(--cc-accent)] hover:bg-[var(--cc-accent-soft)]"
+            >
+              {MORE_DETAILS_OFFER}
+              <ChevronDown className="h-3.5 w-3.5" />
+            </ThreadPrimitive.Suggestion>
+          </MessagePrimitive.If>
+        </>
+      )}
+    </>
+  );
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="consulate-msg-in flex justify-end px-4 py-1.5">
@@ -239,11 +334,7 @@ function AssistantMessage() {
           <MessagePrimitive.Content>
             {({ part }) => {
               if (part.type === "text") {
-                return (
-                  <span className="whitespace-pre-wrap">
-                    {renderWithCitations(part.text)}
-                  </span>
-                );
+                return <AnswerText text={part.text} />;
               }
               if (part.type === "source") {
                 return (
@@ -481,7 +572,7 @@ function QuickActionsBar({ onCitizenCorner }: { onCitizenCorner: () => void }) {
   );
 }
 
-function Composer() {
+function Composer({ onVoice }: { onVoice: () => void }) {
   return (
     <ComposerPrimitive.Root className="flex items-end gap-2 border-t border-[var(--cc-border-soft)] bg-[var(--cc-surface)] px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-3">
       <ComposerPrimitive.Input
@@ -494,7 +585,19 @@ function Composer() {
         }}
         className="consulate-scroll max-h-28 flex-1 resize-none rounded-2xl border border-[var(--cc-border)] bg-[var(--cc-surface-2)] px-4 py-2.5 text-base text-[var(--cc-text)] outline-none transition-shadow placeholder:text-[var(--cc-text-faint)] focus:border-[var(--cc-accent)] focus:ring-2 focus:ring-[var(--cc-ring)] sm:text-[14.5px]"
       />
-      <MicButton />
+      <button
+        type="button"
+        onClick={() => {
+          // Inside the tap: lets iOS play the spoken answers later.
+          warmUpSpeech();
+          onVoice();
+        }}
+        aria-label="Talk to the assistant (voice mode)"
+        title="Voice mode"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[var(--cc-border)] bg-[var(--cc-surface-2)] text-[var(--cc-accent-text)] transition-all duration-150 hover:border-[var(--cc-accent)] hover:bg-[var(--cc-accent-soft)] active:scale-95"
+      >
+        <AudioLines className="h-[18px] w-[18px]" />
+      </button>
       <ComposerPrimitive.Send asChild>
         <button
           type="submit"
@@ -526,70 +629,6 @@ type Flow =
   | "ticketSuccess";
 type CitizenFlow = "hidden" | "form" | "success";
 
-/** Premium playback panel for a spoken answer (voice mode). Appears only when
- * the backend returned a spoken_text (the question came from the mic). The full
- * written answer and citation chips stay in the thread above regardless. */
-function VoiceBar({
-  speaking,
-  onStop,
-  onReplay,
-  onFull,
-}: {
-  speaking: boolean;
-  onStop: () => void;
-  onReplay: () => void;
-  onFull: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-3 border-t border-[var(--cc-border-soft)] bg-gradient-to-b from-[var(--cc-accent-soft)] to-[var(--cc-surface)] px-3.5 py-3">
-      <button
-        type="button"
-        onClick={speaking ? onStop : onReplay}
-        aria-label={speaking ? "Stop playback" : "Play the voice answer"}
-        className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--cc-accent)] text-[var(--cc-accent-ink)] shadow-[var(--cc-shadow-sm)] transition-all duration-150 hover:bg-[var(--cc-accent-hover)] active:scale-95"
-      >
-        {speaking && (
-          <span className="absolute inset-0 rounded-full bg-[var(--cc-accent)] opacity-30 animate-ping" />
-        )}
-        {speaking ? (
-          <Square className="relative h-4 w-4" />
-        ) : (
-          <Play className="relative h-[18px] w-[18px] translate-x-[1px]" />
-        )}
-      </button>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span
-            className={`voice-eq ${speaking ? "is-speaking" : ""}`}
-            aria-hidden="true"
-          >
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-          </span>
-          <span className="truncate text-[13px] font-semibold text-[var(--cc-text)]">
-            {speaking ? "Playing answer" : "Voice answer ready"}
-          </span>
-        </div>
-        <p className="mt-0.5 truncate text-[11px] text-[var(--cc-text-soft)]">
-          Spoken summary. Full details stay on screen.
-        </p>
-      </div>
-
-      <button
-        type="button"
-        onClick={onFull}
-        className="shrink-0 rounded-full border border-[var(--cc-border)] bg-[var(--cc-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--cc-text-soft)] shadow-[var(--cc-shadow-sm)] transition-colors hover:border-[var(--cc-accent)] hover:text-[var(--cc-accent-text)]"
-      >
-        Full answer
-      </button>
-    </div>
-  );
-}
-
 function ChatPanel({
   onClose,
   lastResult,
@@ -607,27 +646,9 @@ function ChatPanel({
   const [citizenFlow, setCitizenFlow] = useState<CitizenFlow>("hidden");
   const [citizenReference, setCitizenReference] = useState<string | null>(null);
 
-  // --- Voice output (spoken answers) ---
-  const [speaking, setSpeaking] = useState(false);
-  const spokenRef = useRef<ChatResponse | null>(null);
-
-  const say = (text: string) => {
-    setSpeaking(true);
-    speak(text, { onEnd: () => setSpeaking(false) });
-  };
-
-  // Auto-play the spoken summary when a voice answer arrives (spoken_text is
-  // only present for mic-originated questions -- see backendAdapter).
-  useEffect(() => {
-    if (lastResult && lastResult !== spokenRef.current && lastResult.spoken_text) {
-      spokenRef.current = lastResult;
-      say(lastResult.spoken_text);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastResult]);
-
-  // Stop any speech when the panel unmounts (closed / conversation reset).
-  useEffect(() => () => stopSpeaking(), []);
+  // Voice conversation overlay (mic -> backend -> spoken answer). The same
+  // questions and full written answers land in this thread underneath.
+  const [voiceMode, setVoiceMode] = useState(false);
 
   // A new question was asked: drop the previous answer's follow-up prompt
   // ("Did this answer your question?" etc.). Otherwise, if the new request
@@ -638,6 +659,14 @@ function ChatPanel({
   const userMessageCount = useAuiState(
     (s) => s.thread.messages.filter((m) => m.role === "user").length,
   );
+  // Joined into one string so the selector returns a stable primitive.
+  const userTextsJoined = useAuiState((s) =>
+    s.thread.messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content.map((p) => (p.type === "text" ? p.text : "")).join(""))
+      .join("\u0000"),
+  );
+  const ticketQuestion = lastRealQuestion(userTextsJoined ? userTextsJoined.split("\u0000") : []);
   const [seenUserMessageCount, setSeenUserMessageCount] = useState(userMessageCount);
   if (userMessageCount !== seenUserMessageCount) {
     setSeenUserMessageCount(userMessageCount);
@@ -660,8 +689,8 @@ function ChatPanel({
         setFlow("resolution");
       } else if (lastResult.generation_error) {
         setFlow("idle"); // service down -> just the "try again" message
-      } else if (lastResult.smalltalk || lastResult.guardrail) {
-        setFlow("idle"); // greeting / injection / crisis -> no escalation offer
+      } else if (lastResult.smalltalk || lastResult.guardrail || lastResult.out_of_scope) {
+        setFlow("idle"); // greeting / injection / crisis / off-topic -> no escalation offer
       } else {
         setFlow("offer");
       }
@@ -675,7 +704,7 @@ function ChatPanel({
 
   return (
     <div
-      className={`consulate-panel-enter flex flex-col overflow-hidden bg-[var(--cc-surface)] shadow-[var(--cc-shadow)] transition-all duration-200 ease-out fixed inset-0 z-50 h-[100dvh] w-screen rounded-none border-0 sm:static sm:z-auto sm:max-w-[92vw] sm:rounded-2xl sm:border sm:border-[var(--cc-border)] ${
+      className={`consulate-panel-enter flex flex-col overflow-hidden bg-[var(--cc-surface)] shadow-[var(--cc-shadow)] transition-all duration-200 ease-out fixed inset-0 z-50 h-[100dvh] w-screen rounded-none border-0 sm:relative sm:z-auto sm:max-w-[92vw] sm:rounded-2xl sm:border sm:border-[var(--cc-border)] ${
         expanded
           ? "sm:h-[720px] sm:max-h-[88vh] sm:w-[440px]"
           : "sm:h-[600px] sm:max-h-[80vh] sm:w-[380px]"
@@ -734,7 +763,7 @@ function ChatPanel({
       </div>
 
       {/* Thread */}
-      <ThreadPrimitive.Root className="flex flex-1 flex-col overflow-hidden bg-[var(--cc-bg)]">
+      <ThreadPrimitive.Root className="relative flex flex-1 flex-col overflow-hidden bg-[var(--cc-bg)]">
         <ThreadPrimitive.Viewport
           role="log"
           aria-live="polite"
@@ -765,7 +794,7 @@ function ChatPanel({
           {flow === "ticketForm" && (
             <div className="consulate-msg-in px-4 py-1.5">
               <SupportTicketForm
-                defaultMessage={lastResult?.query ?? ""}
+                defaultMessage={ticketQuestion || (lastResult?.query ?? "")}
                 onCancel={() => setFlow("idle")}
                 onSubmitted={() => setFlow("ticketSuccess")}
               />
@@ -788,19 +817,10 @@ function ChatPanel({
             <CitizenSuccessMessage referenceNumber={citizenReference} />
           )}
         </ThreadPrimitive.Viewport>
-        {lastResult?.spoken_text && (
-          <VoiceBar
-            speaking={speaking}
-            onStop={() => {
-              stopSpeaking();
-              setSpeaking(false);
-            }}
-            onReplay={() => say(lastResult.spoken_text!)}
-            onFull={() => say(cleanForSpeech(lastResult.answer))}
-          />
-        )}
         <QuickActionsBar onCitizenCorner={openCitizenCorner} />
-        <Composer />
+        <Composer onVoice={() => setVoiceMode(true)} />
+        {/* Voice screen: covers the chat below the DOST header, which stays. */}
+        {voiceMode && <VoiceMode lastResult={lastResult} onExit={() => setVoiceMode(false)} />}
       </ThreadPrimitive.Root>
     </div>
   );

@@ -70,6 +70,39 @@ describe("backendAdapter.run", () => {
     expect(onResult).toHaveBeenCalledOnce();
   });
 
+  it("puts the source's readable title in the chip title when the backend sends one", async () => {
+    fetchMock().mockResolvedValue(
+      jsonResponse(
+        ok({
+          citations: [
+            {
+              index: 1, chunk_id: "c1", source_url: "https://indiainatlanta.gov.in/eoial_pages/MjY1",
+              service_category: "oci", canonical: true, source_title: "FAQ's on OCI related matters",
+            },
+          ],
+        }),
+      ),
+    );
+    const result = (await createBackendAdapter().run(runArgs())) as unknown as { content: { type: string; title?: string }[] };
+    expect(result.content[1]).toMatchObject({ type: "source", title: "[1] OCI FAQ's on OCI related matters" });
+  });
+
+  it("explains an over-long message without calling the server", async () => {
+    const args = {
+      ...runArgs(),
+      messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(2500) }] }],
+    } as unknown as RunArgs;
+    await expect(createBackendAdapter().run(args) as Promise<unknown>).rejects.toThrow(
+      /too long \(2,500 characters\)/,
+    );
+    expect(fetchMock()).not.toHaveBeenCalled();
+  });
+
+  it("gives a 422 a 'shorten it' message, not 'couldn't be reached'", async () => {
+    fetchMock().mockResolvedValue(jsonResponse({}, 422));
+    await expect(run()).rejects.toThrow(/couldn't be processed/);
+  });
+
   it("tells the user to slow down on a 429 (and shows no 'Error:' prefix)", async () => {
     fetchMock().mockResolvedValue(jsonResponse({}, 429));
     const err = await failure(run());

@@ -121,16 +121,55 @@ class Settings(BaseSettings):
     # ones slip through, since the gap's exact location will shift as more
     # sources get approved into the chunk set.
     retrieval_min_relevance: float = 0.55
+    # With earlier conversation, the relevance check above runs on the previous
+    # question + the new message, so "What is the capital of France?" asked after
+    # a passport question passed it and got answered with a passport source.
+    # The new message must therefore ALSO reach this score on its own. Measured
+    # Oct 2026 against the live chunk set: off-topic messages alone scored
+    # 0.34-0.46 ("capital of France" 0.461, "weather today" 0.463), genuine
+    # follow-ups 0.51-0.69 ("and for a child?" 0.527, "is it the same for my
+    # wife?" 0.511, "where do I send it?" 0.564). Messages with a domain keyword
+    # and "yes / more details" replies are always allowed through.
+    retrieval_followup_min_relevance: float = 0.49
     # Words that mark a question as on-topic even when its embedding similarity
     # lands just under retrieval_min_relevance. Very short questions (a bare
     # "OCI" scored 0.547 against the 0.55 floor) carry little signal for the
     # embedding model, so an explicit domain-word check backs it up. Comma
     # separated, matched as whole words/phrases, case-insensitive.
+    # The Oct 2026 test set showed real service questions declined as off-topic
+    # because they named none of the original words ("Who is the applicant for
+    # a Power of Attorney?", an I-485 legal-status question, an appointment
+    # problem), so the list now covers every service the knowledge base has.
     retrieval_domain_keywords: str = (
         "oci,pio,passport,visa,consulate,consular,renunciation,surrender,"
         "attestation,attest,apostille,vfs,police clearance,pcc,birth certificate,"
-        "death certificate,emergency certificate,miscellaneous,overseas citizen"
+        "death certificate,emergency certificate,miscellaneous,overseas citizen,"
+        "power of attorney,poa,affidavit,notarize,notarized,notary,annexure,"
+        "appointment,legal status,green card,i-130,i-485,i-797,i130,i485,i797,"
+        "adjustment of status,"
+        "life certificate,pension,global entry,gep,tatkal,tatkaal,e-visa,evisa,"
+        "e-oci,eoci,nri,nri certificate,marriage certificate,marriage registration,"
+        "birth registration,mortal remains,ashes,cremation,embassy,mea,"
+        "indian citizenship,citizenship,naturalization,naturalisation"
     )
+    # How many approved chunks a chat answer is built from. Raised from 6 to 8
+    # after the Oct 2026 test set: the right chunk was often ranked 7th-9th
+    # behind near-duplicate VFS checklist boilerplate.
+    retrieval_chat_limit: int = 8
+    # Added to an official (canonical: gov.in / Consulate) chunk's fusion score
+    # before the final cut to `retrieval_chat_limit`. RRF scores here are
+    # rank-based and closely spaced, so a small boost only breaks near-ties in
+    # favour of the Consulate's own pages over VFS boilerplate; it cannot lift
+    # an unrelated official page over a clearly better match. 0 disables it.
+    retrieval_canonical_boost: float = 0.05
+    # Approved chunks from these source URLs are added to every chat answer's
+    # sources (after the retrieved ones, if not already there). It is the
+    # Consulate's Contact Us page: VFS helplines, service emails, emergency
+    # numbers and the published "only enquire after N working days" limits.
+    # Without it, questions about a stuck application, a courier or the VFS
+    # website could only be declined, because those pages rarely rank for them.
+    # Comma separated; empty disables it.
+    retrieval_pinned_source_urls: str = "https://indiainatlanta.gov.in/eoial_pages/MzIy"
 
     # --- Generation (Phase 7) ---
     # Self-hosted, CPU-only GGUF model via llama.cpp — no third-party API.

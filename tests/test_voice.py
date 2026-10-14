@@ -66,8 +66,8 @@ def test_strip_for_speech_keeps_fees_and_deadlines():
 def test_voice_mode_attaches_clean_spoken_text_for_a_grounded_answer():
     result = service.answer_question("how do I renew my passport", mode="voice", generator=VoiceGen())
     assert result["grounded"] is True
-    # full written answer still carries its citation markers + chips
-    assert "[1]" in result["answer"]
+    # the written answer carries its sources as chips, not as [n] markers in the text
+    assert "[1]" not in result["answer"]
     assert len(result["citations"]) == 1
     # spoken_text is present, clean, and keeps the fee
     spoken = result["spoken_text"]

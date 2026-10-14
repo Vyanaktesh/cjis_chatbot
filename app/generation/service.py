@@ -14,17 +14,23 @@ from typing import Any, Optional
 
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
+from app.db.connection import get_conn
 from app.embedding.bge_m3 import BgeM3Embedder
 from app.generation.guardrails import screen_query
 from app.generation.prompt import (
+    MORE_DETAILS_OFFER,
     build_rag_messages,
     build_voice_messages,
+    ensure_more_details_offer,
     extract_cited_indices,
     first_sentences,
+    is_more_details_request,
+    normalize_citation_groups,
+    strip_citation_markers,
     strip_for_speech,
     strip_thinking,
 )
-from app.retrieval.retriever import has_approved_content, probe_relevance
+from app.retrieval.retriever import has_approved_content, pinned_chunks, probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
 logger = get_logger(__name__)
@@ -142,10 +148,16 @@ def _retrieval_query(query: str, history: Optional[list[dict[str, str]]]) -> str
     dragging retrieval off-topic as a conversation wanders."""
     if not history:
         return query
-    for message in reversed(history):
-        if message.get("role") == "user" and message.get("content"):
-            return f"{message['content']} {query}"
-    return query
+    # The last TWO earlier questions, so a chain of short follow-ups ("what
+    # documents for OCI?" -> "and for a child?" -> "is it the same for my
+    # wife?") keeps the original topic. Replies that only accept the offer of
+    # more details ("yes") carry no topic and are skipped.
+    earlier = [
+        m["content"]
+        for m in history
+        if m.get("role") == "user" and m.get("content") and not is_more_details_request(m["content"])
+    ][-2:]
+    return " ".join([*earlier, query]) if earlier else query
 
 
 _CITATION_MARK_RE = re.compile(r"\[(\d+)\]")
@@ -189,6 +201,71 @@ def _dedupe_citations_by_source(answer: str, chunks: list[dict[str, Any]]) -> tu
     new_answer = _CITATION_MARK_RE.sub(_remap, answer)
     new_answer = _ADJACENT_DUP_RE.sub(r"\1", new_answer)
     return new_answer, citations
+
+
+_WORD_RE = re.compile(r"[a-z0-9]{4,}")
+_ATTRIBUTION_STOPWORDS = frozenset(
+    "that this with from have will must your they their been were which when where what should would could "
+    "also only into about after before other than then them these those such more most each does done "
+    "applicant applicants application applications please".split()
+)
+# A bullet counts as taken from a chunk when at least this share of its content
+# words appear in that chunk.
+_ATTRIBUTION_MIN_OVERLAP = 0.6
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in _WORD_RE.findall(text.lower()) if w not in _ATTRIBUTION_STOPWORDS}
+
+
+def _attribute_uncited(answer: str, chunks: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Fallback for an answer the model wrote WITHOUT any [n] markers. Each
+    bullet is matched to the retrieved chunk that contains most of its content
+    words; a marker is added only where that overlap is high, and only when most
+    of the substantive bullets are matched. Otherwise the answer is returned
+    unchanged (and stays ungrounded). The model only ever sees these chunks, so
+    this recovers its sources; it never lends a source to unsupported text."""
+    chunk_words = [_content_words(c.get("chunk_text") or "") for c in chunks]
+    lines = answer.splitlines()
+    substantive = matched = 0
+    for i, line in enumerate(lines):
+        words = _content_words(line)
+        if len(words) < 4 or MORE_DETAILS_OFFER in line:
+            continue
+        substantive += 1
+        best, best_idx = 0.0, -1
+        for j, cw in enumerate(chunk_words):
+            score = len(words & cw) / len(words)
+            if score > best:
+                best, best_idx = score, j
+        if best >= _ATTRIBUTION_MIN_OVERLAP:
+            matched += 1
+            lines[i] = f"{line.rstrip()} [{best_idx + 1}]"
+    if not substantive or matched * 2 < substantive:
+        return answer, []
+    return _dedupe_citations_by_source("\n".join(lines), chunks)
+
+
+def _attach_source_titles(citations: list[dict[str, Any]]) -> None:
+    """Adds each citation's source title (from the sources registry) as
+    `source_title`, for the widget's source chips. URLs alone make poor labels:
+    the Consulate's pages are /eoial_pages/MjY1-style codes. Best-effort: if
+    the lookup fails, the chips fall back to a label made from the URL."""
+    if not citations:
+        return
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT url, title FROM sources WHERE url = ANY(%s);",
+                ([c["source_url"] for c in citations],),
+            )
+            titles = dict(cur.fetchall())
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        logger.warning(f"source title lookup failed: {exc}")
+        return
+    for c in citations:
+        if titles.get(c["source_url"]):
+            c["source_title"] = titles[c["source_url"]]
 
 
 def answer_question(
@@ -235,7 +312,7 @@ def _attach_spoken_text(result: dict[str, Any], generator: Optional[Any]) -> Non
 def _answer_core(
     query: str,
     *,
-    limit: int = 6,
+    limit: Optional[int] = None,
     service_category: Optional[str] = None,
     canonical: Optional[bool] = None,
     source_id: Optional[str] = None,
@@ -275,23 +352,36 @@ def _answer_core(
 
     search_query = _retrieval_query(query, history)
     settings = get_settings()
+    if limit is None:
+        limit = settings.retrieval_chat_limit
 
     # Embedded once here and handed to both probe_relevance() and
     # retrieval_search() below -- they used to each embed search_query
     # independently, paying BGE-M3 inference cost twice per turn for
     # identical input. Small (~0.5-1s) but free to eliminate.
-    [query_embedding] = BgeM3Embedder(batch_size=1).embed([search_query])
-
-    relevance = probe_relevance(
-        search_query,
+    # With history, the new message is also embedded on its own (one batch,
+    # one model call) for the follow-up check below.
+    standalone = search_query != query
+    embeddings = BgeM3Embedder(batch_size=2).embed([search_query, query] if standalone else [search_query])
+    query_embedding = embeddings[0]
+    filters = dict(
         service_category=service_category,
         canonical=canonical,
         source_id=source_id,
         jurisdiction=jurisdiction,
         applicant_variant=applicant_variant,
-        query_embedding=query_embedding,
     )
-    on_topic = relevance >= settings.retrieval_min_relevance or _mentions_domain_keyword(query)
+
+    relevance = probe_relevance(search_query, query_embedding=query_embedding, **filters)
+    if _mentions_domain_keyword(query) or is_more_details_request(query):
+        on_topic = True
+    elif standalone:
+        # See Settings.retrieval_followup_min_relevance: the earlier question
+        # alone must not carry an unrelated new message through.
+        own = probe_relevance(query, query_embedding=embeddings[1], **filters)
+        on_topic = relevance >= settings.retrieval_min_relevance and own >= settings.retrieval_followup_min_relevance
+    else:
+        on_topic = relevance >= settings.retrieval_min_relevance
     if not on_topic:
         # The question text is deliberately not logged: visitors can type
         # personal details (names, passport numbers) into it.
@@ -313,6 +403,9 @@ def _answer_core(
             "grounded": False,
             "citations": [],
             "retrieved_count": 0,
+            # Tells the widget not to offer "pass this along to the consulate":
+            # an off-topic question is not something for consular staff.
+            "out_of_scope": True,
         }
 
     chunks = retrieval_search(
@@ -335,7 +428,16 @@ def _answer_core(
             "retrieved_count": 0,
         }
 
-    messages = build_rag_messages(query, chunks, history)
+    # Add the Consulate's contact page (see Settings.retrieval_pinned_source_urls)
+    # so a question the retrieved sources can't fully answer can still end with
+    # the right, cited contact. Skipped when the caller narrowed the search
+    # to a category/source, which asks for exactly those sources.
+    pinned_urls = [u.strip() for u in settings.retrieval_pinned_source_urls.split(",") if u.strip()]
+    if pinned_urls and not (service_category or source_id or canonical is not None):
+        have = {c["chunk_id"] for c in chunks}
+        chunks = chunks + [c for c in pinned_chunks(pinned_urls) if c["chunk_id"] not in have]
+
+    messages = build_rag_messages(query, chunks, history, full_answer=bool(history) and is_more_details_request(query))
     generator = generator or _default_generator()
     try:
         raw = generator.generate(messages)
@@ -359,7 +461,7 @@ def _answer_core(
             "retrieved_count": len(chunks),
             "generation_error": "generation_unavailable",
         }
-    answer = strip_thinking(raw)
+    answer = normalize_citation_groups(strip_thinking(raw))
 
     # Collapse [1][2][3]... that all point to the same source document into one
     # citation, renumbering the answer's bracket markers to match.
@@ -373,9 +475,26 @@ def _answer_core(
     # model produced any text, so a model-written "I don't have approved
     # information" reply never offered the escalation.
     declined = _DECLINE_RE.search(answer) is not None
+    if not citations and not declined and answer.strip():
+        # The model answered but left out the [n] markers it was asked for.
+        answer, citations = _attribute_uncited(answer, chunks)
     grounded = bool(citations) and not declined
     if declined:
         citations = []  # no source chips under an answer that says nothing was found
+
+    # The [n] markers have done their job (picking the citations above); the
+    # visitor sees the sources as chips after the answer instead of numbers in
+    # the text. A short answer ends with the offer of more details (prompt rule
+    # 6c); the full answer given after "yes" does not repeat it (rule 11).
+    _attach_source_titles(citations)
+    answer = strip_citation_markers(answer)
+    if grounded and not is_more_details_request(query):
+        answer = ensure_more_details_offer(answer)
+    else:
+        # A refusal ("I don't have approved information...") must not offer
+        # more details -- the model sometimes adds the line anyway -- and the
+        # full answer after "yes" does not repeat it.
+        answer = answer.replace(MORE_DETAILS_OFFER, "").rstrip()
 
     return {
         "query": query,
