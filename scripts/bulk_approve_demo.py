@@ -69,6 +69,16 @@ def main():
         action="store_true",
         help="List how many chunks would be approved, but change nothing.",
     )
+    parser.add_argument(
+        "--actor",
+        default=ACTOR,
+        help="Who the audit log records as approving (default: bulk_approve_demo).",
+    )
+    parser.add_argument(
+        "--reason",
+        default=None,
+        help="Recorded in the audit log with each approval, e.g. which content review this was.",
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -97,7 +107,7 @@ def main():
         try:
             # Fresh transaction per chunk (see module docstring).
             with get_conn() as conn:
-                decide_chunk(conn, qc, chunk_id, "approved", actor=ACTOR)
+                decide_chunk(conn, qc, chunk_id, "approved", actor=args.actor, reason=args.reason)
             approved += 1
         except ChunkNotFound:
             # Superseded or vanished between the snapshot and now -- skip it.

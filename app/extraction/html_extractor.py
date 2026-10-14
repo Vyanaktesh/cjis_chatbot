@@ -31,6 +31,15 @@ STRIP_TAGS = [
     "button", "input", "select", "textarea", "option",
 ]
 
+# Containers known to hold a page's own content, tried in order. The
+# Consulate's site (indiainatlanta.gov.in) puts a ~3,000-word mega-menu in
+# plain <div>/<ul> markup rather than <nav>, so without this every page
+# produced chunks of menu text ("Manufacturers & Exporters • Contact Us •
+# Media Room ...") that crowded real content out of retrieval. When none of
+# these exist (other sites, the Consulate's homepage) the whole <body> is
+# used, as before.
+CONTENT_ROOT_SELECTORS = ["#innerContent"]
+
 HEADING_TAGS = {f"h{i}": i for i in range(1, 7)}
 
 # Tags whose text flows inline with the text around them (as opposed to
@@ -64,7 +73,10 @@ def extract_html(html_bytes: bytes) -> list[Block]:
     for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
         comment.extract()
 
-    root = soup.body or soup
+    root = next(
+        (el for el in (soup.select_one(sel) for sel in CONTENT_ROOT_SELECTORS) if el is not None),
+        soup.body or soup,
+    )
     blocks: list[Block] = []
     _walk(root, blocks)
     return blocks

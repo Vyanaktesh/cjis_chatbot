@@ -67,6 +67,22 @@ def test_short_text_inside_real_blocks_is_never_filtered():
     assert out == ["Menu", "Photo", "Adult"]
 
 
+def test_known_content_container_wins_over_menu_markup():
+    # Shape of an indiainatlanta.gov.in page: the menu is plain divs/lists,
+    # the page's own content sits in #innerContent.
+    out = texts(
+        "<body><div id='mainNav'><ul><li>Home</li><li>Manufacturers &amp; Exporters</li></ul></div>"
+        "<div id='innerContent'><h2>Processing time</h2><p>New OCI takes 5-6 weeks.</p></div>"
+        "<div id='footer'><p>Visitors: 12345</p></div></body>"
+    )
+    assert out == ["Processing time", "New OCI takes 5-6 weeks."]
+
+
+def test_pages_without_a_content_container_use_the_whole_body():
+    out = texts("<body><div><p>Fee is $100.</p></div><div><p>Apply online.</p></div></body>")
+    assert out == ["Fee is $100.", "Apply online."]
+
+
 def test_site_chrome_and_non_content_is_removed():
     out = texts(
         "<!DOCTYPE html><html><head><title>t</title><style>p{}</style></head><body>"
