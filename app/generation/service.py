@@ -30,7 +30,8 @@ from app.generation.prompt import (
     strip_for_speech,
     strip_thinking,
 )
-from app.retrieval.retriever import has_approved_content, pinned_chunks, probe_relevance
+from app.retrieval.query_rewrite import rewrite_active, start_rewrite, wait_for_rewrite
+from app.retrieval.retriever import fuse_results, has_approved_content, pinned_chunks, probe_relevance
 from app.retrieval.retriever import search as retrieval_search
 
 logger = get_logger(__name__)
@@ -94,6 +95,66 @@ _DECLINE_RE = re.compile(
     r"\b(?:do not|don['’]t|dont) have (?:any )?approved information\b",
     re.IGNORECASE,
 )
+# A note on what the sources do not cover: the decline phrase above, or "the
+# sources do not state/mention/...". A bullet that goes on to give content ("...,
+# but a re-issue can be applied for [1]") is not just a note. The model sometimes
+# puts a citation on a bare note, so a citation alone doesn't make it content.
+_GAP_NOTE_RE = re.compile(
+    r"\b(?:(?:do not|don['’]t|dont) have (?:any )?approved information"
+    r"|sources? (?:do not|does not|don['’]t) (?:explicitly |specifically |directly )?"
+    r"(?:state|say|mention|contain|specify|cover|include|provide))",
+    re.IGNORECASE,
+)
+_CONTRAST_RE = re.compile(r"\b(?:but|however|although|though|instead)\b", re.IGNORECASE)
+
+
+def _is_gap_note(line: str) -> bool:
+    return bool(_GAP_NOTE_RE.search(line)) and not _CONTRAST_RE.search(line)
+
+
+# "Contact VFS Global at +1 800 ...": where to get help, not an answer.
+_CONTACT_RE = re.compile(r"\b(?:contact|helpline|call|e-?mail|phone|reach)\b", re.IGNORECASE)
+
+
+def _is_substantive(line: str) -> bool:
+    """A bullet that answers something: not a gap note, not only a contact."""
+    return line.lstrip().startswith("- ") and not _is_gap_note(line) and not _CONTACT_RE.search(line)
+
+
+def _gap_notes_last(answer: str) -> str:
+    """Rule 13 / rule 6 ask for what the sources DO say first and any note on
+    what they leave open last, but the model sometimes opens with the gap ("I
+    don't have approved information covering whether you must wait...") and
+    gives the useful, cited part after it. When the first bullet is such a note
+    and other bullets carry content, the notes are moved after the content.
+    Nothing is added or removed, only the order of the bullets changes; lines
+    that are not bullets (the more-details offer) stay where they are."""
+    lines = answer.split("\n")
+    bullets = [i for i, line in enumerate(lines) if line.lstrip().startswith("- ")]
+    gaps = [i for i in bullets if _is_gap_note(lines[i])]
+    if not gaps or bullets[0] not in gaps or not any(_is_substantive(lines[i]) for i in bullets):
+        # Nothing to put first: a decline followed only by contacts stays a decline.
+        return answer
+    reordered = [lines[i] for i in bullets if i not in gaps] + [lines[i] for i in gaps]
+    for position, line in zip(bullets, reordered):
+        lines[position] = line
+    return "\n".join(lines)
+
+
+def _is_full_decline(answer: str) -> bool:
+    """True when the reply says it has no approved information AND gives
+    nothing it can source. A partial answer, cited facts plus a note on what
+    the sources don't cover (rule 13), is an answer: treating it as a decline
+    used to drop every source chip under the facts it did give."""
+    bullets = [line for line in answer.splitlines() if line.lstrip().startswith("- ")]
+    if not bullets:
+        # An unbulleted reply keeps the old rule: the phrase means a decline.
+        return _DECLINE_RE.search(answer) is not None
+    if not any(_is_gap_note(line) for line in bullets):
+        return False
+    # "I don't have approved information..." or "The sources do not contain...",
+    # with nothing but contacts after it, is a decline even if a citation is attached.
+    return not any(_CITATION_MARK_RE.search(line) for line in bullets if _is_substantive(line))
 
 GENERATION_UNAVAILABLE_ANSWER = (
     "Sorry, the service is temporarily down. Please wait a moment and try "
@@ -148,16 +209,20 @@ def _retrieval_query(query: str, history: Optional[list[dict[str, str]]]) -> str
     dragging retrieval off-topic as a conversation wanders."""
     if not history:
         return query
-    # The last TWO earlier questions, so a chain of short follow-ups ("what
-    # documents for OCI?" -> "and for a child?" -> "is it the same for my
-    # wife?") keeps the original topic. Replies that only accept the offer of
-    # more details ("yes") carry no topic and are skipped.
-    earlier = [
+    earlier = _earlier_questions(history)
+    return " ".join([*earlier, query]) if earlier else query
+
+
+def _earlier_questions(history: Optional[list[dict[str, str]]]) -> list[str]:
+    """The last TWO earlier questions, so a chain of short follow-ups ("what
+    documents for OCI?" -> "and for a child?" -> "is it the same for my
+    wife?") keeps the original topic. Replies that only accept the offer of
+    more details ("yes") carry no topic and are skipped."""
+    return [
         m["content"]
-        for m in history
+        for m in history or []
         if m.get("role") == "user" and m.get("content") and not is_more_details_request(m["content"])
     ][-2:]
-    return " ".join([*earlier, query]) if earlier else query
 
 
 _CITATION_MARK_RE = re.compile(r"\[(\d+)\]")
@@ -355,6 +420,15 @@ def _answer_core(
     if limit is None:
         limit = settings.retrieval_chat_limit
 
+    # Rewrite the message into a clean search query (see
+    # app/retrieval/query_rewrite.py) on a background thread while the
+    # original is embedded and checked below. A "yes, more details" reply
+    # carries no topic of its own and is searched as before.
+    rewrite_future = None
+    if rewrite_active() and not is_more_details_request(query):
+        generator = generator or _default_generator()
+        rewrite_future = start_rewrite(generator, query, _earlier_questions(history))
+
     # Embedded once here and handed to both probe_relevance() and
     # retrieval_search() below -- they used to each embed search_query
     # independently, paying BGE-M3 inference cost twice per turn for
@@ -408,16 +482,24 @@ def _answer_core(
             "out_of_scope": True,
         }
 
-    chunks = retrieval_search(
-        search_query,
-        limit=limit,
-        service_category=service_category,
-        canonical=canonical,
-        source_id=source_id,
-        jurisdiction=jurisdiction,
-        applicant_variant=applicant_variant,
-        query_embedding=query_embedding,
-    )
+    rewritten = wait_for_rewrite(rewrite_future)
+    if rewritten and rewritten.strip().lower() != search_query.strip().lower():
+        # Search with the visitor's own words AND the rewrite, then fuse the two
+        # rankings. Each list goes deeper than `limit` so a chunk both wordings
+        # rank just below the cut can still make it into the fused top.
+        depth = limit * 2
+        [rewrite_embedding] = BgeM3Embedder(batch_size=1).embed([rewritten])
+        chunks = fuse_results(
+            [
+                retrieval_search(search_query, limit=depth, query_embedding=query_embedding, **filters),
+                retrieval_search(rewritten, limit=depth, query_embedding=rewrite_embedding, **filters),
+            ],
+            [1.0, settings.retrieval_rewrite_weight],
+            limit=limit,
+            keep_top=settings.retrieval_fusion_keep_top,
+        )
+    else:
+        chunks = retrieval_search(search_query, limit=limit, query_embedding=query_embedding, **filters)
 
     if not chunks:
         return {
@@ -474,7 +556,8 @@ def _answer_core(
     # it returns nothing at all. Previously this was always True once the
     # model produced any text, so a model-written "I don't have approved
     # information" reply never offered the escalation.
-    declined = _DECLINE_RE.search(answer) is not None
+    answer = _gap_notes_last(answer)
+    declined = _is_full_decline(answer)
     if not citations and not declined and answer.strip():
         # The model answered but left out the [n] markers it was asked for.
         answer, citations = _attribute_uncited(answer, chunks)
@@ -503,4 +586,6 @@ def _answer_core(
         "citations": citations,
         "retrieved_count": len(chunks),
         "uncited_sources_retrieved": len(chunks) - len(citations),
+        # For the chat log only; the API removes it before replying.
+        "rewritten_query": rewritten,
     }

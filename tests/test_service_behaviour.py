@@ -173,3 +173,89 @@ def test_an_uncited_answer_not_found_in_any_chunk_stays_ungrounded(monkeypatch):
     result = service.answer_question("renew bangladeshi passport", generator=Gen(invented))
     assert result["grounded"] is False
     assert result["citations"] == []
+
+
+# --- notes on what the sources don't cover go last ---------------------------
+
+ADDRESS_CHUNK = {**CHUNK, "chunk_id": "c3", "source_url": "https://example.gov/reissue"}
+
+
+def test_a_leading_gap_note_moves_after_the_cited_content(monkeypatch):
+    monkeypatch.setattr(service, "retrieval_search", lambda *a, **k: [ADDRESS_CHUNK])
+    reply = (
+        "- I don't have approved information covering whether you must wait for your passport to expire. "
+        "Please contact the consulate directly.\n"
+        "- To change your address, you apply for a passport re-issue [1].\n"
+        "- Send a proof of your present address with the application [1]."
+    )
+    result = service.answer_question("can I change my address now or must I wait?", generator=Gen(reply))
+    bullets = [l for l in result["answer"].splitlines() if l.startswith("- ")]
+    assert bullets[0].startswith("- To change your address, you apply for a passport re-issue")
+    assert "approved information" in bullets[-1]
+    # A partial answer keeps its sources and is not treated as a decline.
+    assert result["grounded"] is True
+    assert [c["source_url"] for c in result["citations"]] == ["https://example.gov/reissue"]
+
+
+def test_a_reply_with_nothing_cited_is_still_a_decline():
+    reply = (
+        "- I don't have approved information covering that. Please contact the consulate directly.\n"
+        "- The consulate can help with questions like this."
+    )
+    result = service.answer_question("how long can I stay in India?", generator=Gen(reply))
+    assert result["grounded"] is False
+    assert result["citations"] == []
+    assert "More details" not in result["answer"] and service.MORE_DETAILS_OFFER not in result["answer"]
+
+
+def test_a_bullet_with_both_a_gap_note_and_a_cited_fact_stays_put():
+    reply = (
+        "- The sources do not state a waiting period, but a re-issue can be applied for to change the address [1].\n"
+        "- Send a proof of address [1]."
+    )
+    assert service._gap_notes_last(reply) == reply
+
+
+def test_gap_notes_keep_the_offer_line_at_the_end():
+    reply = (
+        "- The sources do not mention a waiting period.\n"
+        "- Apply for a passport re-issue [1].\n\n"
+        "Would you like more details on this?"
+    )
+    out = service._gap_notes_last(reply)
+    assert out.splitlines()[0] == "- Apply for a passport re-issue [1]."
+    assert out.splitlines()[1] == "- The sources do not mention a waiting period."
+    assert out.rstrip().endswith("Would you like more details on this?")
+
+
+def test_a_decline_with_only_a_cited_contact_is_still_a_decline():
+    reply = (
+        "- I don't have approved information covering where invitation letters should be mailed. "
+        "Please contact the consulate directly.\n"
+        "- You can contact the VFS Global Atlanta helpline at +1 800 320 9693 [1]."
+    )
+    result = service.answer_question("where do I mail my letter of invitation?", generator=Gen(reply))
+    assert result["grounded"] is False  # the widget offers to raise it with the Consulate
+    assert result["answer"].splitlines()[0].startswith("- I don't have approved information")
+
+
+def test_a_cited_gap_note_still_goes_after_the_content():
+    reply = (
+        "- The provided sources do not specify the processing time for GEP verification [1].\n"
+        "- Apply first on the US CBP Trusted Traveler Programs website [1].\n"
+        "- Then submit your physical application to VFS Global [1]."
+    )
+    out = service._gap_notes_last(reply)
+    assert out.splitlines()[0].startswith("- Apply first on the US CBP")
+    assert out.splitlines()[-1].startswith("- The provided sources do not specify")
+
+
+def test_a_sources_do_not_contain_reply_with_a_cited_contact_is_a_decline():
+    reply = (
+        "- The provided sources do not contain information regarding COVID-19 vaccine requirements [1].\n"
+        "- For further assistance you may contact VFS Global at +1 800 320 9693 [1]."
+    )
+    result = service.answer_question("are there any covid vaccine requirements?", generator=Gen(reply))
+    assert result["grounded"] is False
+    assert result["citations"] == []
+    assert service.MORE_DETAILS_OFFER not in result["answer"]
