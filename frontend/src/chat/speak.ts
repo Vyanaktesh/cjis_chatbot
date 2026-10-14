@@ -46,19 +46,39 @@ export function speak(text: string, opts: SpeakOptions = {}): void {
     return;
   }
 
+  // onEnd exactly once: after the last sentence, on an error/cancel, or from
+  // the watchdog below.
+  let ended = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const finish = () => {
+    if (ended) return;
+    ended = true;
+    clearTimeout(watchdog);
+    opts.onEnd?.();
+  };
+
   const utter = () => {
     try {
       window.speechSynthesis.cancel(); // never overlap utterances
-      const u = new SpeechSynthesisUtterance(text);
+      // One utterance per sentence: Chrome silently stops a single utterance
+      // after ~15 seconds and never fires onend.
+      const parts = splitSentences(text);
       const voice = pickEnglishVoice();
-      if (voice) u.voice = voice;
-      u.rate = opts.rate ?? 1;
-      u.lang = "en-US";
-      u.onend = () => opts.onEnd?.();
-      u.onerror = () => opts.onEnd?.();
-      window.speechSynthesis.speak(u);
+      parts.forEach((part, i) => {
+        const u = new SpeechSynthesisUtterance(part);
+        if (voice) u.voice = voice;
+        u.rate = opts.rate ?? 1;
+        u.lang = "en-US";
+        if (i === parts.length - 1) u.onend = finish;
+        u.onerror = finish;
+        window.speechSynthesis.speak(u);
+      });
+      // If the engine never reports the end (it happens), don't leave the
+      // caller stuck in "speaking": allow ~2.5 words a second plus a margin.
+      const words = text.split(/\s+/).length;
+      watchdog = setTimeout(finish, (words / 2.5) * 1000 * (1 / (opts.rate ?? 1)) + 8000);
     } catch {
-      opts.onEnd?.();
+      finish();
     }
   };
 
@@ -78,6 +98,30 @@ export function speak(text: string, opts: SpeakOptions = {}): void {
   };
   window.speechSynthesis.addEventListener("voiceschanged", go);
   setTimeout(go, 500);
+}
+
+/** Split text into sentences for speaking; very long sentences are further
+ * split at commas so no single utterance runs much past ~10 seconds. */
+export function splitSentences(text: string): string[] {
+  // Split only at sentence punctuation followed by a space, so "$41.00" and
+  // "U.S." stay whole.
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const out: string[] = [];
+  for (const s of sentences.map((x) => x.trim()).filter(Boolean)) {
+    if (s.split(/\s+/).length <= 30) {
+      out.push(s);
+      continue;
+    }
+    let cur = "";
+    for (const piece of s.split(/(?<=,)\s+/)) {
+      if (cur && (cur + " " + piece).split(/\s+/).length > 30) {
+        out.push(cur);
+        cur = piece;
+      } else cur = cur ? `${cur} ${piece}` : piece;
+    }
+    if (cur) out.push(cur);
+  }
+  return out.length ? out : [text];
 }
 
 export function stopSpeaking(): void {

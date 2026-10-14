@@ -16,6 +16,7 @@ average (dense cosine similarity and sparse lexical scores aren't on
 comparable scales).
 """
 
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from app.core.config import get_settings
@@ -111,6 +112,34 @@ def probe_relevance(
     return points[0].score if points else 0.0
 
 
+def pinned_chunks(urls: list[str], client=None) -> list[dict[str, Any]]:
+    """Approved chunks of the given source URLs, in document order (see
+    Settings.retrieval_pinned_source_urls). Best-effort: on any failure an
+    answer is built from the retrieved chunks alone."""
+    if not urls:
+        return []
+    from qdrant_client.http import models as qmodels
+
+    try:
+        client = client or get_qdrant_client()
+        points, _ = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=qmodels.Filter(must=[
+                qmodels.FieldCondition(key="review_status", match=qmodels.MatchValue(value=APPROVED)),
+                qmodels.FieldCondition(key="source_url", match=qmodels.MatchAny(any=urls)),
+            ]),
+            limit=20,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception:  # noqa: BLE001 -- see docstring
+        return []
+    points.sort(key=lambda p: (p.payload.get("source_url"), p.payload.get("chunk_index", 0)))
+    # Scroll results carry no relevance score; wrap them so _point_to_result
+    # can read the same attributes as a search hit.
+    return [_point_to_result(SimpleNamespace(id=p.id, score=None, payload=p.payload), 0) for p in points]
+
+
 def search(
     query: str,
     *,
@@ -162,7 +191,15 @@ def search(
     if query_embedding is None:
         embedder = embedder or BgeM3Embedder(batch_size=1)
         [query_embedding] = embedder.embed([query])
-    search_limit = max(limit, settings.retrieval_rerank_candidates) if settings.retrieval_rerank else limit
+    boost = settings.retrieval_canonical_boost
+    if settings.retrieval_rerank:
+        search_limit = max(limit, settings.retrieval_rerank_candidates)
+    elif boost:
+        # Fetch a few extra so a near-tied official chunk just below the cut can
+        # be promoted (see Settings.retrieval_canonical_boost).
+        search_limit = limit + 4
+    else:
+        search_limit = limit
     points = hybrid_search(
         client,
         query_dense=query_embedding.dense,
@@ -175,6 +212,11 @@ def search(
     results = [_point_to_result(p, i + 1) for i, p in enumerate(points)]
 
     if not settings.retrieval_rerank or not results:
+        if boost:
+            # Stable sort: equal adjusted scores keep their fusion order.
+            results.sort(key=lambda r: (r["score"] or 0.0) + (boost if r["canonical"] else 0.0), reverse=True)
+            for i, r in enumerate(results, start=1):
+                r["rank"] = i
         return results[:limit]
 
     reranker = reranker or Reranker()

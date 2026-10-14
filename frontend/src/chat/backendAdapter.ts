@@ -48,9 +48,16 @@ class ChatError extends Error {
 const EMPTY_ANSWER_FALLBACK =
   "Sorry, I couldn't put an answer together for that. Could you try rephrasing your question?";
 
+// Mirrors MAX_MESSAGE_CHARS in app/api/main.py. Checked before sending so an
+// over-long message gets a clear explanation instead of "couldn't be reached".
+export const MAX_MESSAGE_CHARS = 2000;
+
 function messageForStatus(status: number): string {
   if (status === 429) {
     return "You're sending messages too quickly. Please wait a minute and try again.";
+  }
+  if (status === 413 || status === 422) {
+    return `That message couldn't be processed. Please shorten it (under ${MAX_MESSAGE_CHARS.toLocaleString()} characters) and try again.`;
   }
   return `The consulate assistant couldn't be reached (HTTP ${status}). Please try again in a moment.`;
 }
@@ -114,6 +121,8 @@ type BackendCitation = {
   source_url: string;
   service_category: string;
   canonical: boolean;
+  // Human-readable source name from the registry; absent if the lookup failed.
+  source_title?: string;
 };
 
 export type ChatResponse = {
@@ -133,6 +142,9 @@ export type ChatResponse = {
   // human escalation -- there's nothing for the consulate to follow up on.
   smalltalk?: boolean;
   guardrail?: string;
+  // Set when the question is outside consular services entirely ("capital of
+  // France"): no escalation offer, since there is nothing for the consulate.
+  out_of_scope?: boolean;
   // Present only when the question was asked by voice (mode="voice"): a short
   // summary of the answer to read aloud. See app/generation/service.py.
   spoken_text?: string;
@@ -162,6 +174,11 @@ export function createBackendAdapter(
     async run({ messages, abortSignal }) {
       const current = messages[messages.length - 1];
       const query = extractText(current);
+      if (query.length > MAX_MESSAGE_CHARS) {
+        throw new ChatError(
+          `Your message is too long (${query.length.toLocaleString()} characters). Please shorten it to under ${MAX_MESSAGE_CHARS.toLocaleString()} characters and send it again.`,
+        );
+      }
 
       const history = messages
         .slice(0, -1)
@@ -242,7 +259,8 @@ export function createBackendAdapter(
             sourceType: "url" as const,
             id: c.chunk_id,
             url: c.source_url,
-            title: `[${c.index}] ${(c.service_category ?? "source").toUpperCase()} source`,
+            // "[1] OCI <source title>" -- parsed back apart by ChatWidget's SourceChip.
+            title: `[${c.index}] ${(c.service_category ?? "source").toUpperCase()} ${c.source_title ?? "source"}`,
           }),
         ),
       ];

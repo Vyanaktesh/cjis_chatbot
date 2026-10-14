@@ -46,3 +46,4 @@ secrets/
 /qdrant_storage.tar.gz
 *.tar.gz
 /gemini_line.txt
+data/export/
